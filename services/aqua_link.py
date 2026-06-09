@@ -1,0 +1,107 @@
+"""Генерация ссылок AQUA для оффера / входящих."""
+
+from __future__ import annotations
+
+from sqlalchemy import func, select
+
+from config import config
+from models import Offer, User
+from services.aqua_keys import (
+    aqua_service_for_api,
+    get_user_aqua_api_keys_async,
+    get_user_aqua_service,
+    get_user_goo_profile_id,
+    is_valid_aqua_service,
+)
+from services.aqua_network import AquaError, generate_aqua_link
+from services.offer_storage import offer_effective_photo, offer_effective_price, offer_effective_title
+
+
+def _is_http_url(url: str | None) -> bool:
+    u = (url or "").strip().lower()
+    return u.startswith(("http://", "https://"))
+
+
+async def resolve_aqua_image_url(
+    session,
+    user: User,
+    offer: Offer | None,
+    image: str | None = None,
+) -> str:
+    """AQUA no-parse требует поле image — URL фото объявления."""
+    for candidate in (
+        (image or "").strip(),
+        offer_effective_photo(offer),
+    ):
+        if _is_http_url(candidate):
+            return candidate.strip()
+
+    uid = int(getattr(user, "id", 0) or 0)
+    if uid:
+        rows = (
+            await session.execute(
+                select(Offer.photo)
+                .where(Offer.user_id == uid, Offer.photo.is_not(None))
+                .order_by(func.random())
+                .limit(40)
+            )
+        ).scalars().all()
+        for p in rows:
+            ps = (p or "").strip()
+            if _is_http_url(ps):
+                return ps
+
+    default = (getattr(config, "AQUA_DEFAULT_IMAGE_URL", None) or "").strip()
+    if _is_http_url(default):
+        return default
+
+    raise AquaError(
+        "Нет URL фото для AQUA (поле image обязательно). "
+        "Загрузите JSON с item_photo, добавьте AQUA_DEFAULT_IMAGE_URL на Railway "
+        "или укажите реальный URL объявления 2dehands.be (не главную страницу)."
+    )
+
+
+async def aqua_generate_for_offer(
+    session,
+    user: User,
+    offer: Offer | None,
+    *,
+    listing_url: str | None = None,
+    price: str | None = None,
+) -> str:
+    user_key, team_key = await get_user_aqua_api_keys_async(session, user)
+    if not user_key:
+        raise AquaError("Не задан личный API key. ⚙️ → 🔑 Ключ")
+    if not team_key:
+        raise AquaError("Ключ команды Narkologia не задан на сервере (NARKOLOGIA_TEAM_API_KEY).")
+
+    profile_id = get_user_goo_profile_id(user)
+    if not profile_id:
+        raise AquaError("Не выбран профиль AQUA. ⚙️ → 🧾 Профиль → Выбрать профиль")
+
+    service = await get_user_aqua_service(session, user)
+    if not is_valid_aqua_service(service):
+        raise AquaError("Не выбран сервис. ⚙️ → 🧾 Профиль → Tori.fi / Posti.fi")
+
+    title = offer_effective_title(offer)
+    if not title:
+        raise AquaError("Нет названия объявления")
+
+    p = (price or "").strip() or offer_effective_price(offer)
+    if not p:
+        raise AquaError("Нет цены")
+
+    image = await resolve_aqua_image_url(session, user, offer)
+    api_service = aqua_service_for_api(service)
+
+    return await generate_aqua_link(
+        user_api_key=user_key,
+        team_api_key=team_key,
+        service=api_service,
+        profile_id=profile_id,
+        listing_url=listing_url,
+        name=title,
+        price=p,
+        image=image,
+    )

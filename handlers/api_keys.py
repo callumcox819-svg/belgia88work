@@ -1,0 +1,466 @@
+"""GOO NETWORK — ключи и профиль · Бельгия (команда Narkologia)."""
+
+from __future__ import annotations
+
+from aiogram import Router, F
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.exceptions import TelegramBadRequest
+
+from database import Session
+from config import config
+from services.users import get_or_create_user
+from services.aqua_keys import (
+    AQUA_PROFILE_ADDRESS_KEY,
+    AQUA_PROFILE_NAME_KEY,
+    AQUA_PROFILE_TITLE_KEY,
+    AQUA_SERVICE_KEY,
+    AQUA_USER_API_KEY_SETTING,
+    apply_aqua_profile_to_user,
+    aqua_service_label,
+    get_global_aqua_team_key,
+    get_team_name,
+    get_user_aqua_api_keys_async,
+    get_user_aqua_service,
+    get_user_aqua_user_key_async,
+    get_user_goo_profile_id,
+    normalize_aqua_api_key,
+    normalize_aqua_service,
+)
+from services.aqua_network import AquaError
+from services.aqua_profiles import (
+    AquaProfile,
+    fetch_aqua_team_profiles,
+    profiles_from_env_json,
+)
+from services.user_settings import get_user_setting, set_user_setting
+from utils.secrets import clean_secret
+
+router = Router(name="api_keys")
+
+_PROFILES_PAGE_SIZE = 8
+
+
+class KeysState(StatesGroup):
+    waiting_value = State()
+
+
+def _back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")]]
+    )
+
+
+def profile_screen_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Выбрать профиль GOO", callback_data="aqua_profile_list:0")],
+            [InlineKeyboardButton(text="🆔 Profile ID вручную", callback_data="aqua_profile_id:menu")],
+            [InlineKeyboardButton(text="🧭 Сервис", callback_data="aqua_service_menu")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")],
+            [InlineKeyboardButton(text="🟢 Скрыть", callback_data="aqua_hide")],
+        ]
+    )
+
+
+def profile_id_view_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Изменить", callback_data="aqua_set:profile_id")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="aqua_show:profile")],
+        ]
+    )
+
+
+def key_screen_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🛠 Личный API key", callback_data="aqua_set:user_key")],
+            [InlineKeyboardButton(text="🔍 Проверить ключи", callback_data="aqua_test_keys")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")],
+            [InlineKeyboardButton(text="🟢 Скрыть", callback_data="aqua_hide")],
+        ]
+    )
+
+
+def _show_full(key: str | None) -> str:
+    return (key or "—").strip() or "—"
+
+
+def _profile_id_display(user) -> str:
+    pid = get_user_goo_profile_id(user)
+    if pid:
+        return f"<code>{pid}</code>"
+    return "<i>не задан</i>"
+
+
+def _profiles_list_kb(profiles: list[AquaProfile], page: int) -> InlineKeyboardMarkup:
+    page = max(0, page)
+    start = page * _PROFILES_PAGE_SIZE
+    chunk = profiles[start : start + _PROFILES_PAGE_SIZE]
+    rows: list[list[InlineKeyboardButton]] = []
+    for p in chunk:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=p.button_label(),
+                    callback_data=f"aqua_prof_sel:{p.profile_id}",
+                )
+            ]
+        )
+    nav: list[InlineKeyboardButton] = []
+    if start > 0:
+        nav.append(
+            InlineKeyboardButton(text="◀️", callback_data=f"aqua_profile_list:{page - 1}")
+        )
+    if start + _PROFILES_PAGE_SIZE < len(profiles):
+        nav.append(
+            InlineKeyboardButton(text="▶️", callback_data=f"aqua_profile_list:{page + 1}")
+        )
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="aqua_show:profile")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _load_team_profiles(session, user) -> list[AquaProfile]:
+    user_key, team_key = await get_user_aqua_api_keys_async(session, user)
+    service = await get_user_aqua_service(session, user)
+    try:
+        return await fetch_aqua_team_profiles(
+            user_api_key=user_key,
+            team_api_key=team_key,
+            service=service or None,
+        )
+    except AquaError:
+        fallback = profiles_from_env_json()
+        if fallback:
+            return fallback
+        raise
+
+
+async def _render_profile_screen(callback: CallbackQuery) -> None:
+    async with Session() as session:
+        user = await get_or_create_user(session, callback.from_user.id)
+        prof_title = (await get_user_setting(session, user, AQUA_PROFILE_TITLE_KEY) or "—").strip() or "—"
+        prof_name = (await get_user_setting(session, user, AQUA_PROFILE_NAME_KEY) or "—").strip() or "—"
+        service_raw = await get_user_aqua_service(session, user)
+        service = aqua_service_label(service_raw) if service_raw else "—"
+        pid = get_user_goo_profile_id(user)
+        pid_line = f"<code>{pid}</code>" if pid else "<i>не задан</i>"
+        text = (
+            f"👤 <b>Профиль GOO</b>\n\n"
+            f"Выбери профиль из команды {get_team_name()} или укажи Profile ID вручную.\n\n"
+            f"Название: <code>{prof_title}</code>\n"
+            f"ФИО: <code>{prof_name}</code>\n"
+            f"Profile ID: {pid_line}\n"
+            f"Сервис: <b>{service}</b>"
+            + (f" (<code>{service_raw}</code>)" if service_raw else "")
+            + f"\n\n🇧🇪 {config.COUNTRY_LABEL} · команда <b>{get_team_name()}</b>"
+        )
+    try:
+        await callback.message.edit_text(text, reply_markup=profile_screen_kb(), parse_mode="HTML")
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
+
+
+async def _render_profile_id_screen(callback: CallbackQuery) -> None:
+    async with Session() as session:
+        user = await get_or_create_user(session, callback.from_user.id)
+        text = (
+            f"🆔 <b>Profile ID</b> (бот GOO / {get_team_name()})\n\n"
+            f"Текущий ID: {_profile_id_display(user)}\n\n"
+            f"<i>Мой профиль → Профили…</i> в боте {get_team_name()} — или «📋 Выбрать профиль»."
+        )
+    await callback.message.edit_text(
+        text, reply_markup=profile_id_view_kb(), parse_mode="HTML"
+    )
+
+
+async def _render_key_screen(callback: CallbackQuery) -> None:
+    async with Session() as session:
+        user = await get_or_create_user(session, callback.from_user.id)
+        user_key = await get_user_aqua_user_key_async(session, user)
+    team_ok = bool(get_global_aqua_team_key())
+    text = (
+        f"🔑 <b>Ключ GOO</b> (api.goo.network)\n\n"
+        f"Личный API key: {'✅' if user_key else '❌'}\n"
+        f"<code>{_show_full(user_key)}</code>\n"
+        f"<i>→ поле «Ваш токен» в {get_team_name()}, не «Токен команды»</i>\n\n"
+        f"Токен команды {get_team_name()}: {'✅' if team_ok else '❌'} "
+        "<i>(NARKOLOGIA_TEAM_API_KEY на сервере, общий для всех)</i>\n\n"
+        f"🇧🇪 {config.COUNTRY_LABEL} · команда <b>{get_team_name()}</b>"
+    )
+    await callback.message.edit_text(text, reply_markup=key_screen_kb(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "aqua_hide")
+async def aqua_hide(callback: CallbackQuery) -> None:
+    await callback.message.edit_text("✅ Скрыто.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "aqua_show:profile")
+async def aqua_show_profile(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer()
+    await _render_profile_screen(callback)
+
+
+@router.callback_query(F.data == "aqua_profile_id:menu")
+async def aqua_profile_id_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer()
+    await _render_profile_id_screen(callback)
+
+
+@router.callback_query(F.data == "aqua_show:key")
+async def aqua_show_key(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await _render_key_screen(callback)
+
+
+@router.callback_query(F.data == "aqua_test_keys")
+async def aqua_test_keys(callback: CallbackQuery) -> None:
+    await callback.answer("Проверяю…")
+    async with Session() as session:
+        user = await get_or_create_user(session, callback.from_user.id)
+        user_key = await get_user_aqua_user_key_async(session, user)
+        team_key = get_global_aqua_team_key()
+        if not user_key:
+            return await callback.message.answer(
+                "❌ Личный API key не задан. ⚙️ → 🔑 → Личный API key"
+            )
+        if not team_key:
+            return await callback.message.answer(
+                "❌ На сервере нет <code>NARKOLOGIA_TEAM_API_KEY</code>.",
+                parse_mode="HTML",
+            )
+        try:
+            profiles = await fetch_aqua_team_profiles(
+                user_api_key=user_key,
+                team_api_key=team_key,
+                service=await get_user_aqua_service(session, user) or None,
+            )
+        except AquaError as e:
+            return await callback.message.answer(f"❌ GOO API: {e}")
+    await callback.message.answer(
+        f"✅ Ключи работают. Профилей в команде: <b>{len(profiles)}</b>.\n"
+        "Можно создавать ссылку.",
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("aqua_profile_list:"))
+async def aqua_profile_list(callback: CallbackQuery, state: FSMContext) -> None:
+    try:
+        page = int((callback.data or "").split(":", 1)[1])
+    except Exception:
+        page = 0
+
+    await callback.answer("Загрузка…")
+    try:
+        async with Session() as session:
+            user = await get_or_create_user(session, callback.from_user.id)
+            user_key = await get_user_aqua_user_key_async(session, user)
+            if not user_key:
+                await callback.message.edit_text(
+                    "❌ Сначала укажи личный API key: ⚙️ → 🔑 Ключ",
+                    reply_markup=_back_kb(),
+                )
+                return
+            if not get_global_aqua_team_key():
+                await callback.message.edit_text(
+                    "❌ На сервере не задан <code>NARKOLOGIA_TEAM_API_KEY</code>.",
+                    parse_mode="HTML",
+                    reply_markup=_back_kb(),
+                )
+                return
+            profiles = await _load_team_profiles(session, user)
+    except AquaError as e:
+        await callback.message.edit_text(
+            f"❌ Не удалось загрузить профили:\n<code>{str(e)[:350]}</code>\n\n"
+            "Проверь: личный = «Ваш токен», команда = Railway <code>NARKOLOGIA_TEAM_API_KEY</code>.",
+            parse_mode="HTML",
+            reply_markup=profile_screen_kb(),
+        )
+        return
+
+    if not profiles:
+        await callback.message.edit_text(
+            f"📭 Нет профилей в команде {get_team_name()}.\nСоздай в боте GOO: Мой профиль → Профили…",
+            reply_markup=profile_screen_kb(),
+        )
+        return
+
+    await state.update_data(aqua_profiles_cache=[p.__dict__ for p in profiles])
+    total_pages = (len(profiles) + _PROFILES_PAGE_SIZE - 1) // _PROFILES_PAGE_SIZE
+    page = min(max(0, page), max(0, total_pages - 1))
+    text = (
+        f"📋 <b>Профили {get_team_name()}</b> ({len(profiles)})\n\n"
+        "Выбери профиль — в GOO уйдёт его <code>profileID</code>."
+    )
+    if total_pages > 1:
+        text += f"\n\nСтр. {page + 1}/{total_pages}"
+    await callback.message.edit_text(
+        text,
+        reply_markup=_profiles_list_kb(profiles, page),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("aqua_prof_sel:"))
+async def aqua_profile_select(callback: CallbackQuery, state: FSMContext) -> None:
+    profile_id = (callback.data or "").split(":", 1)[1].strip()
+    if not profile_id:
+        return await callback.answer("Нет ID профиля", show_alert=True)
+
+    data = await state.get_data()
+    cached = data.get("aqua_profiles_cache") or []
+    chosen: AquaProfile | None = None
+    for raw in cached:
+        if isinstance(raw, dict) and str(raw.get("profile_id") or "") == profile_id:
+            chosen = AquaProfile(
+                profile_id=profile_id,
+                title=str(raw.get("title") or ""),
+                full_name=str(raw.get("full_name") or ""),
+                address=str(raw.get("address") or ""),
+            )
+            break
+
+    if not chosen:
+        try:
+            async with Session() as session:
+                user = await get_or_create_user(session, callback.from_user.id)
+                for p in await _load_team_profiles(session, user):
+                    if p.profile_id == profile_id:
+                        chosen = p
+                        break
+        except AquaError as e:
+            return await callback.answer(str(e)[:180], show_alert=True)
+
+    if not chosen:
+        chosen = AquaProfile(profile_id=profile_id, title="", full_name="", address="")
+
+    async with Session() as session:
+        user = await get_or_create_user(session, callback.from_user.id)
+        await apply_aqua_profile_to_user(session, user, chosen)
+        await session.commit()
+
+    await callback.answer("✅ Профиль выбран")
+    await _render_profile_screen(callback)
+
+
+@router.callback_query(F.data == "aqua_set:user_key")
+async def aqua_set_user_key_begin(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(KeysState.waiting_value)
+    await state.update_data(field="aqua_user_key")
+    await callback.message.edit_text(
+        "✍️ <b>Личный API key</b>\n\n"
+        f"Из {get_team_name()}: Профиль → API → поле <b>Ваш токен</b> "
+        "(не «Токен команды»).\n\n"
+        "Заголовок: <code>Authorization: Apikey …</code>",
+        reply_markup=_back_kb(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "aqua_set:profile_id")
+async def aqua_set_profile_id_begin(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(KeysState.waiting_value)
+    await state.update_data(field="aqua_profile_id")
+    await callback.message.edit_text(
+        f"✍️ Введи <b>Profile ID</b> из бота {get_team_name()}\n\n"
+        "<i>Мой профиль → Профили…</i>",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Отмена", callback_data="aqua_profile_id:menu")]
+            ]
+        ),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(KeysState.waiting_value)
+async def keys_set_finish(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    field = data.get("field")
+    value = clean_secret((message.text or "").strip())
+    if not value:
+        await message.answer("❌ Пустое значение.")
+        return
+
+    async with Session() as session:
+        user = await get_or_create_user(session, message.from_user.id)
+        if field == "aqua_user_key":
+            value = normalize_aqua_api_key(value)
+            user.goo_user_api_key_aqua = value
+            await set_user_setting(session, user, AQUA_USER_API_KEY_SETTING, value)
+        elif field == "aqua_profile_id":
+            await apply_aqua_profile_to_user(
+                session,
+                user,
+                AquaProfile(profile_id=value, title="", full_name="", address=""),
+            )
+        else:
+            await message.answer("❌ Неизвестное поле.")
+            return
+        await session.commit()
+
+    await state.clear()
+    if field == "aqua_profile_id":
+        await message.answer(
+            f"✅ Profile ID сохранён\n\nТекущий ID: <code>{value}</code>",
+            parse_mode="HTML",
+            reply_markup=profile_id_view_kb(),
+        )
+    else:
+        await message.answer("✅ Сохранено.")
+
+
+@router.callback_query(F.data == "aqua_service_menu")
+async def aqua_service_menu(callback: CallbackQuery) -> None:
+    async with Session() as session:
+        user = await get_or_create_user(session, callback.from_user.id)
+        cur = await get_user_aqua_service(session, user)
+
+    from services.aqua_keys import aqua_service_matches
+
+    def mark(service: str, label: str) -> str:
+        return ("🟩 " if aqua_service_matches(cur, service) else "⬜️ ") + label
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=mark("2dehands_be", "2dehands.be"), callback_data="aqua_service_set:2dehands_be")],
+            [InlineKeyboardButton(text=mark("bpost_be", "bpost.be"), callback_data="aqua_service_set:bpost_be")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="aqua_show:profile")],
+        ]
+    )
+    await callback.message.edit_text(
+        f"🧭 <b>Сервис GOO</b> ({config.COUNTRY_LABEL})\n\n"
+        "<code>2dehands_be</code> · <code>bpost_be</code>",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("aqua_service_set:"))
+async def aqua_service_set(callback: CallbackQuery) -> None:
+    try:
+        _, service = (callback.data or "").split(":", 1)
+    except Exception:
+        return await callback.answer("Неверные данные", show_alert=True)
+    canonical = normalize_aqua_service(service)
+    if not canonical:
+        return await callback.answer("Неизвестный сервис", show_alert=True)
+    async with Session() as session:
+        user = await get_or_create_user(session, callback.from_user.id)
+        await set_user_setting(session, user, AQUA_SERVICE_KEY, canonical)
+        await session.commit()
+    await callback.answer("✅ Сервис выбран")
+    await aqua_service_menu(callback)
