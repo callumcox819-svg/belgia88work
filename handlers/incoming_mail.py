@@ -108,17 +108,25 @@ async def _aqua_generate_link(
 ) -> str:
     user_key, team_key = await get_user_aqua_api_keys_async(session, user)
     if not user_key:
-        raise AquaError("Личный API key AQUA не установлен. ⚙️ → 🔑 Ключ")
+        raise AquaError("Личный API-ключ не установлен. ⚙️ → 🔑")
     if not team_key:
         raise AquaError(
             "Ключ команды Narkologia не задан на сервере (переменная NARKOLOGIA_TEAM_API_KEY)."
         )
+    from services.aqua_keys import user_profile_fields_complete
+
+    if not await user_profile_fields_complete(session, user):
+        raise AquaError(
+            "Профиль не заполнен. ⚙️ → 🧾 Профиль → Заполнить / изменить."
+        )
     profile_id = get_user_goo_profile_id(user)
     if not profile_id:
-        raise AquaError("Не выбран профиль AQUA. ⚙️ → 🧾 Профиль → Выбрать профиль")
+        raise AquaError(
+            "Нет profileID. Сохраните профиль ещё раз в ⚙️ → 🧾 Профиль."
+        )
     service = await get_user_aqua_service(session, user)
     if not is_valid_aqua_service(service):
-        raise AquaError("Не выбран сервис (Tori.fi / Posti.fi). 👤 Профиль → Выбор сервиса")
+        raise AquaError("Не задан сервис площадки.")
     offer = None
     if listing_url:
         from services.offer_storage import find_offer_by_link
@@ -2295,7 +2303,7 @@ async def cb_mail_reply_html_send(callback: CallbackQuery, state: FSMContext):
         service_raw = (await get_user_setting(session, user_pre, AQUA_SERVICE_KEY) or "").strip()
         if not is_valid_aqua_service(service_raw):
             return await callback.answer(
-                "Сначала выберите сервис в 👤 Профиль → 🧭 Выбор сервиса",
+                "Сначала заполните профиль: ⚙️ → 🧾 Профиль",
                 show_alert=True,
             )
         from services.html_templates import html_template_path, service_label_for_path

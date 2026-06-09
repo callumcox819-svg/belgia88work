@@ -129,16 +129,32 @@ def get_user_goo_profile_id(user: User) -> str:
     return (getattr(user, "goo_profile_id", None) or "").strip()
 
 
+async def get_user_profile_title(session, user: User) -> str:
+    return (await get_user_setting(session, user, AQUA_PROFILE_TITLE_KEY) or "").strip()
+
+
+async def get_user_profile_buyer_name(session, user: User) -> str:
+    return (await get_user_setting(session, user, AQUA_PROFILE_NAME_KEY) or "").strip()
+
+
+async def get_user_profile_address(session, user: User) -> str:
+    return (await get_user_setting(session, user, AQUA_PROFILE_ADDRESS_KEY) or "").strip()
+
+
+async def user_profile_fields_complete(session, user: User) -> bool:
+    return bool(
+        await get_user_profile_title(session, user)
+        and await get_user_profile_buyer_name(session, user)
+        and await get_user_profile_address(session, user)
+    )
+
+
 async def get_user_aqua_profile_display(session, user: User) -> str:
-    title = (
-        await get_user_setting(session, user, AQUA_PROFILE_TITLE_KEY) or ""
-    ).strip()
-    pid = get_user_goo_profile_id(user)
-    if title and pid:
-        return f"{title} ({pid})"
-    if title:
-        return title
-    return pid
+    title = await get_user_profile_title(session, user)
+    name = await get_user_profile_buyer_name(session, user)
+    if title and name:
+        return f"{title} · {name}"
+    return title or name or get_user_goo_profile_id(user)
 
 
 async def apply_aqua_profile_to_user(session, user: User, profile) -> None:

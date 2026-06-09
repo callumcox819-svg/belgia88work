@@ -258,7 +258,7 @@ async def _spoof_name_menu_payload(tg_user_id: int) -> tuple[str, InlineKeyboard
 async def _show_spoof_name_menu_message(message: Message, *, prompt_chat_id: int | None, prompt_msg_id: int | None) -> None:
     payload = await _spoof_name_menu_payload(message.from_user.id)
     if not payload:
-        await message.answer("Сначала выберите сервис в 👤 Профиль → 🧭 Выбор сервиса.")
+        await message.answer("Сначала заполните профиль: ⚙️ → 🧾 Профиль.")
         return
     text, kb = payload
     if prompt_chat_id and prompt_msg_id:
@@ -356,19 +356,6 @@ async def settings_open_cb(callback: CallbackQuery, state: FSMContext):
 # =========================
 # Missing callbacks from settings menu (Domains / Sender name / Templates / Timings / HTML nick)
 # =========================
-
-
-@router.callback_query(F.data == "settings_domains")
-async def settings_domains(callback: CallbackQuery) -> None:
-    """Open domains menu. We don't touch domains logic, only show its existing inline menu."""
-    from handlers.domains import domains_menu_kb
-
-    await callback.message.edit_text(
-        "🌐 <b>Управление доменами</b>\n\nВыбери действие:",
-        reply_markup=domains_menu_kb(),
-        parse_mode="HTML",
-    )
-    await callback.answer()
 
 
 @router.callback_query(F.data == "sender_name_menu")

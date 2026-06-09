@@ -190,6 +190,118 @@ async def fetch_aqua_team_profiles(
     raise AquaError(last_err or "Не удалось загрузить профили AQUA")
 
 
+_CREATE_PATHS = (
+    "/api/generate/single/profile/create",
+    "/api/generate/single/profile/add",
+    "/api/generate/single/profile",
+)
+
+
+async def create_aqua_profile_remote(
+    *,
+    user_api_key: str,
+    team_api_key: str,
+    title: str,
+    buyer_name: str,
+    address: str,
+    service: str | None = None,
+    timeout_sec: float = 30.0,
+) -> AquaProfile:
+    """Создать профиль в API (имя на ссылке + адрес доставки)."""
+    user_key = normalize_aqua_api_key(user_api_key)
+    team_key = normalize_aqua_api_key(team_api_key)
+    if not user_key:
+        raise AquaError("Не задан личный API key")
+    if not team_key:
+        raise AquaError("Не задан ключ команды (NARKOLOGIA_TEAM_API_KEY)")
+
+    title_s = (title or "").strip()
+    name_s = (buyer_name or "").strip()
+    addr_s = (address or "").strip()
+    if not (title_s and name_s and addr_s):
+        raise AquaError("Заполните название профиля, имя получателя и адрес")
+
+    body: dict[str, Any] = {
+        "title": title_s,
+        "name": title_s,
+        "profileName": title_s,
+        "buyer_name": name_s,
+        "buyerName": name_s,
+        "full_name": name_s,
+        "fullName": name_s,
+        "address": addr_s,
+        "buyer_address": addr_s,
+        "buyerAddress": addr_s,
+    }
+    svc = (service or "").strip()
+    if svc:
+        body["service"] = svc
+
+    headers = {
+        "Authorization": _auth_header(user_key),
+        "Host": _api_host(),
+        "X-Team-Key": team_key,
+        "Content-Type": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=timeout_sec)
+    last_err: str | None = None
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for path in _CREATE_PATHS:
+            url = f"{_api_base()}{path}"
+            async with session.post(url, json=body, headers=headers) as resp:
+                text = await resp.text()
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    data = None
+                if resp.status == 404:
+                    last_err = f"HTTP 404: {path}"
+                    continue
+                if resp.status != 200:
+                    msg = ""
+                    if isinstance(data, dict):
+                        msg = str(data.get("message") or data.get("error") or "")
+                    last_err = f"HTTP {resp.status} ({path}): {msg or text[:200]}"
+                    if resp.status in (401, 403):
+                        raise AquaError(last_err)
+                    continue
+                if isinstance(data, dict):
+                    prof = _parse_profile_item(data.get("profile") or data.get("data") or data)
+                    if not prof and data.get("message"):
+                        prof = _parse_profile_item(data)
+                    if prof:
+                        return AquaProfile(
+                            profile_id=prof.profile_id,
+                            title=title_s,
+                            full_name=name_s,
+                            address=addr_s,
+                        )
+                last_err = f"Нет profileID в ответе ({path})"
+
+    raise AquaError(last_err or "Не удалось создать профиль в API")
+
+
+def find_profile_in_list(
+    profiles: list[AquaProfile],
+    *,
+    title: str,
+    buyer_name: str,
+) -> AquaProfile | None:
+    t = (title or "").strip().lower()
+    n = (buyer_name or "").strip().lower()
+    for p in profiles:
+        pt = (p.title or "").strip().lower()
+        pn = (p.full_name or "").strip().lower()
+        if t and pt == t:
+            return p
+        if n and pn == n:
+            return p
+        if t and n and pt == t and (not pn or pn == n):
+            return p
+    return None
+
+
 def profiles_from_env_json() -> list[AquaProfile]:
     """Опциональный fallback: AQUA_TEAM_PROFILES_JSON в Variables."""
     raw = (getattr(config, "AQUA_TEAM_PROFILES_JSON", None) or "").strip()

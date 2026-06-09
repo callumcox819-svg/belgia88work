@@ -345,7 +345,7 @@ async def main() -> None:
     if is_persistent_database_url(_db_url):
         logger.info("✅ БД готова (PostgreSQL, persistent) · %s", database_url_for_logs(_db_url))
     else:
-        logger.info("✅ БД готова (%s, локально) · Finland / AQUA", _db_engine.dialect.name)
+        logger.info("✅ БД готова (%s, локально) · Belgium", _db_engine.dialect.name)
 
     dp = Dispatcher()
     dp.startup.register(_on_startup)
@@ -375,7 +375,7 @@ async def main() -> None:
     )
 
     me = await bot.get_me()
-    logger.info("✅ Bot @%s (id=%s) · Finland / AQUA. Polling…", me.username, me.id)
+    logger.info("✅ Bot @%s (id=%s) · Belgium. Polling…", me.username, me.id)
 
     asyncio.create_task(_polling_heartbeat(bot))
 

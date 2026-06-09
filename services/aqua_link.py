@@ -12,6 +12,7 @@ from services.aqua_keys import (
     get_user_aqua_service,
     get_user_goo_profile_id,
     is_valid_aqua_service,
+    user_profile_fields_complete,
 )
 from services.aqua_network import AquaError, generate_aqua_link
 from services.offer_storage import offer_effective_photo, offer_effective_price, offer_effective_title
@@ -76,13 +77,21 @@ async def aqua_generate_for_offer(
     if not team_key:
         raise AquaError("Ключ команды Narkologia не задан на сервере (NARKOLOGIA_TEAM_API_KEY).")
 
+    if not await user_profile_fields_complete(session, user):
+        raise AquaError(
+            "Профиль не заполнен. ⚙️ → 🧾 Профиль → Заполнить / изменить "
+            "(название, имя получателя, адрес)."
+        )
+
     profile_id = get_user_goo_profile_id(user)
     if not profile_id:
-        raise AquaError("Не выбран профиль AQUA. ⚙️ → 🧾 Профиль → Выбрать профиль")
+        raise AquaError(
+            "Нет profileID. Сохраните профиль ещё раз: ⚙️ → 🧾 Профиль → Заполнить / изменить."
+        )
 
     service = await get_user_aqua_service(session, user)
     if not is_valid_aqua_service(service):
-        raise AquaError("Не выбран сервис. ⚙️ → 🧾 Профиль → Tori.fi / Posti.fi")
+        raise AquaError("Не задан сервис площадки (2dehands).")
 
     title = offer_effective_title(offer)
     if not title:
