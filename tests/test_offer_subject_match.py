@@ -37,6 +37,11 @@ class OfferSubjectMatchTests(unittest.TestCase):
         subj = "Re: Carte panini 2026"
         self.assertEqual(offer_display_title(subj, shirt), "Carte panini 2026")
 
+    def test_display_title_short_re_subject_not_full_db_title(self):
+        tramp = SimpleNamespace(title="Trampoline van Berg", raw_json=None)
+        subj = "Re: Trampoline"
+        self.assertEqual(offer_display_title(subj, tramp), "Trampoline")
+
 
 if __name__ == "__main__":
     unittest.main()

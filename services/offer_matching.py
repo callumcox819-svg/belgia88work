@@ -78,18 +78,16 @@ def subject_title_agrees(subject: str, offer: Offer) -> bool:
 
 
 def offer_display_title(subject: str, offer: Offer | None) -> str:
-    """Товар в карточке: при Re: на другой лот — тема письма, не последний оффер по email."""
+    """Товар в карточке = тема письма (Re: …), не полное название лота из БД."""
     from services.offer_storage import offer_effective_title
 
     subj_t = product_title_from_subject(subject)
+    if subject_is_informative(subject) and subj_t:
+        return subj_t
     if not offer:
         return subj_t or (subject or "").strip()
     ot = (offer_effective_title(offer) or "").strip()
-    if subject_is_informative(subject):
-        if subject_title_agrees(subject, offer):
-            return ot or subj_t
-        return subj_t or ot
-    return ot or subj_t
+    return ot or subj_t or (subject or "").strip()
 
 
 # Минимум совпадения темы с лотом из conversation_links (старый диалог)
