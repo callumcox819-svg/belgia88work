@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 
 from services.offer_matching import (
+    _pick_offer_by_subject_in_list,
     offer_display_title,
     product_title_from_subject,
     subject_match_score,
@@ -41,6 +42,20 @@ class OfferSubjectMatchTests(unittest.TestCase):
         tramp = SimpleNamespace(title="Trampoline van Berg", raw_json=None)
         subj = "Re: Trampoline"
         self.assertEqual(offer_display_title(subj, tramp), "Trampoline")
+
+    def test_pick_trampoline_offer_among_seller_listings(self):
+        tramp = SimpleNamespace(
+            title="Trampoline van Berg",
+            link="https://www.2dehands.be/v/trampoline",
+            raw_json=None,
+        )
+        sofa = SimpleNamespace(
+            title="Grote bank",
+            link="https://www.2dehands.be/v/bank",
+            raw_json=None,
+        )
+        hit = _pick_offer_by_subject_in_list([sofa, tramp], "Re: Trampoline")
+        self.assertIs(hit, tramp)
 
 
 if __name__ == "__main__":

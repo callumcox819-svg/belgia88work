@@ -64,7 +64,7 @@ def subject_title_agrees(subject: str, offer: Offer) -> bool:
         return True
     if len(title) >= 8 and title in needle:
         return True
-    if len(needle) >= 8 and needle in title:
+    if len(needle) >= 4 and needle in title:
         return True
     mt = _meaningful_subject_tokens(needle)
     tt = _meaningful_subject_tokens(title)
@@ -586,18 +586,50 @@ async def _load_offer(
     ).scalars().first()
 
 
-async def find_offer_by_incoming_subject(
-    session,
-    user_id: int,
-    subject: str,
-) -> Offer | None:
-    """Лид по теме Re: <товар> — как find_lead_by_incoming_subject в poputka88."""
+def _pick_offer_by_subject_in_list(offers: list[Offer], subject: str) -> Offer | None:
+    """Лучший лот из списка по теме Re: (substring / токены)."""
     from services.offer_storage import offer_effective_link, offer_effective_title
 
     needle = _norm_subject(subject)
     if len(needle) < 4:
         return None
     nl = needle.lower()
+
+    best: Offer | None = None
+    best_len = 0
+    for off in offers:
+        title = (offer_effective_title(off) or "").strip()
+        if not title or len(title) < 4:
+            continue
+        if not offer_effective_link(off):
+            continue
+        tl = title.lower()
+        if nl == tl or (len(tl) >= 8 and tl in nl) or (len(nl) >= 4 and nl in tl):
+            if len(title) > best_len:
+                best = off
+                best_len = len(title)
+        elif subject_title_agrees(subject, off):
+            if len(title) > best_len:
+                best = off
+                best_len = len(title)
+    return best
+
+
+async def find_offer_by_incoming_subject(
+    session,
+    user_id: int,
+    subject: str,
+    from_email: str = "",
+) -> Offer | None:
+    """Лид по теме Re: <товар> — сначала у этого продавца (poputka88)."""
+    fe = (from_email or "").strip()
+    if fe:
+        seller_offers = await list_offers_for_seller_email(
+            session, user_id=int(user_id), from_email=fe
+        )
+        hit = _pick_offer_by_subject_in_list(seller_offers, subject)
+        if hit:
+            return hit
 
     rows = (
         await session.execute(
@@ -607,25 +639,7 @@ async def find_offer_by_incoming_subject(
             .limit(2500)
         )
     ).scalars().all()
-
-    best: Offer | None = None
-    best_len = 0
-    for off in rows:
-        title = (offer_effective_title(off) or "").strip()
-        if not title or len(title) < 4:
-            continue
-        if not offer_effective_link(off):
-            continue
-        tl = title.lower()
-        if nl == tl or (len(tl) >= 8 and tl in nl) or (len(nl) >= 8 and nl in tl):
-            if len(title) > best_len:
-                best = off
-                best_len = len(title)
-        elif subject_title_agrees(subject, off):
-            if len(title) > best_len:
-                best = off
-                best_len = len(title)
-    return best
+    return _pick_offer_by_subject_in_list(list(rows), subject)
 
 
 async def incoming_mail_product_snapshot(
@@ -639,7 +653,9 @@ async def incoming_mail_product_snapshot(
     """Название товара для карточки/БД — не путаем Re: с чужим лотом по email."""
     off = offer
     if off is None and subject_is_informative(subject):
-        off = await find_offer_by_incoming_subject(session, int(user_id), subject)
+        off = await find_offer_by_incoming_subject(
+            session, int(user_id), subject, from_email=from_email
+        )
     return (offer_display_title(subject, off) or "").strip()
 
 
@@ -687,6 +703,14 @@ async def resolve_listing_for_incoming_mail(
 
     subj = _strip_subject_edges((subject or "").strip())
     fe = (from_email or "").strip()
+    subj_strong = subject_is_informative(subj)
+
+    if resolved_offer_id and subj_strong:
+        off_stale = await _load_offer(
+            session, user_id=int(user_id), offer_id=int(resolved_offer_id)
+        )
+        if off_stale and not subject_title_agrees(subj, off_stale):
+            resolved_offer_id = None
 
     if not (pinned_offer_id or conv_ad_url) and (inbox_email or "").strip() and fe:
         conv = await _load_conversation_link(
@@ -701,6 +725,20 @@ async def resolve_listing_for_incoming_mail(
             if not conv_ad_url:
                 conv_ad_url = (conv.ad_url or "").strip() or None
 
+    if subj_strong and pinned_offer_id:
+        off_pin = await _load_offer(
+            session, user_id=int(user_id), offer_id=int(pinned_offer_id)
+        )
+        if off_pin and not subject_title_agrees(subj, off_pin):
+            pinned_offer_id = None
+
+    if subj_strong and (conv_ad_url or "").strip():
+        off_conv = await find_offer_by_link(
+            session, user_id=int(user_id), ad_url=(conv_ad_url or "").strip()
+        )
+        if off_conv and not subject_title_agrees(subj, off_conv):
+            conv_ad_url = None
+
     def _ret(off: Offer | None) -> tuple[Offer | None, str]:
         if not off:
             return None, ""
@@ -710,12 +748,22 @@ async def resolve_listing_for_incoming_mail(
         ensure_offer_link_column(off, link)
         return off, link
 
-    if subject_is_informative(subj):
-        off_subj = await find_offer_by_incoming_subject(session, int(user_id), subj)
+    if subj_strong and fe:
+        seller_first = await list_offers_for_seller_email(
+            session, user_id=int(user_id), from_email=fe
+        )
+        off_seller = _pick_offer_by_subject_in_list(seller_first, subj)
+        if off_seller:
+            return _ret(off_seller)
+
+    if subj_strong:
+        off_subj = await find_offer_by_incoming_subject(
+            session, int(user_id), subj, from_email=fe
+        )
         if off_subj:
             return _ret(off_subj)
 
-    if subject_is_informative(subj):
+    if subj_strong:
         recent = (
             await session.execute(
                 sa_select(Offer)
@@ -783,28 +831,25 @@ async def resolve_listing_for_incoming_mail(
 
     if resolved_offer_id:
         off = await _load_offer(session, user_id=int(user_id), offer_id=int(resolved_offer_id))
-        min_sc = _SUBJECT_EMAIL_AGREE_MIN_SCORE if subject_is_informative(subj) else None
+        min_sc = _SUBJECT_EMAIL_AGREE_MIN_SCORE if subj_strong else None
         pair = _aqua_offer_pair(subj, off, min_score=min_sc)
         if pair:
             return pair
 
     if pinned_offer_id:
         off = await _load_offer(session, user_id=int(user_id), offer_id=int(pinned_offer_id))
-        if off and subject_is_informative(subj) and not subject_title_agrees(subj, off):
-            pinned_offer_id = None
-        else:
-            min_sc = _SUBJECT_EMAIL_AGREE_MIN_SCORE if subject_is_informative(subj) else None
-            pair = _aqua_offer_pair(subj, off, min_score=min_sc)
-            if pair:
-                return pair
+        min_sc = _SUBJECT_EMAIL_AGREE_MIN_SCORE if subj_strong else None
+        pair = _aqua_offer_pair(subj, off, min_score=min_sc)
+        if pair:
+            return pair
 
     curl = (conv_ad_url or "").strip()
     if curl:
         off = await find_offer_by_link(session, user_id=int(user_id), ad_url=curl)
         if off:
-            if not subject_is_informative(subj):
+            if not subj_strong:
                 return _ret(off)
-            if subject_match_score(subj, off) >= _CONV_AD_URL_MIN_SUBJECT_SCORE:
+            if subject_title_agrees(subj, off):
                 return _ret(off)
 
     oid, _ = await resolve_offer_for_incoming(
