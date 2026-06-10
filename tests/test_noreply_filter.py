@@ -55,6 +55,10 @@ class TestNoreplyFilter(unittest.TestCase):
     def test_allows_seller_not_platform(self):
         self.assertFalse(_is_platform_system_mail("jan.verkoper@gmail.com", "Jan"))
 
+    def test_blocks_facebookmail_not_whole_facebook_com(self):
+        self.assertTrue(_is_platform_system_mail("noreply@facebookmail.com", "Facebook"))
+        self.assertFalse(_is_platform_system_mail("someone@facebook.com", "John"))
+
 
 if __name__ == "__main__":
     unittest.main()

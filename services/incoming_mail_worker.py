@@ -199,6 +199,7 @@ _PLATFORM_SYSTEM_DOMAINS = frozenset(
         "subito.it",
         "marktplaats.nl",
         "mail.instagram.com",
+        # Только системная почта Meta (коды/уведомления), не *.facebook.com целиком.
         "facebookmail.com",
         "account.tiktok.com",
         "tiktok.com",
@@ -209,7 +210,6 @@ _PLATFORM_SYSTEM_NAME_HINTS = frozenset(
         "wallapop",
         "vinted",
         "instagram",
-        "facebook",
         "tiktok",
         "leboncoin",
         "subito",
@@ -228,14 +228,19 @@ def _is_platform_system_mail(from_email: str, from_name: str, subject: str = "")
     _local, _, domain = f.rpartition("@")
     if domain in _PLATFORM_SYSTEM_DOMAINS:
         return True
-    for plat in ("wallapop", "vinted", "instagram", "facebook", "tiktok"):
+    for plat in ("wallapop", "vinted", "instagram", "tiktok"):
         if domain == f"{plat}.com" or domain.endswith(f".{plat}.com"):
             return True
+    # Facebook: только facebookmail.com (коды/системка), не весь facebook.com
+    if domain == "facebookmail.com" or domain.endswith(".facebookmail.com"):
+        return True
     name = (from_name or "").strip().lower()
     if name in _PLATFORM_SYSTEM_NAME_HINTS:
         root = domain.split(".")[-2] if "." in domain else domain
         if root in _PLATFORM_SYSTEM_NAME_HINTS or name in domain:
             return True
+    if name == "facebook" and (domain == "facebookmail.com" or domain.endswith(".facebookmail.com")):
+        return True
     return False
 
 
