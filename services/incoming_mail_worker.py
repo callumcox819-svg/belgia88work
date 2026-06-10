@@ -161,6 +161,23 @@ def _looks_like_spam(from_email: str, from_name: str, subject: str, body: str) -
     return False
 
 
+_NOREPLY_LOCAL_RE = re.compile(
+    r"^(?:no[-_.]?reply|noreply|donotreply|do[-_.]?not[-_.]?reply|noresponse|no[-_.]?response)(?:\+.*)?$",
+    re.IGNORECASE,
+)
+
+
+def _is_noreply_automated_sender(from_email: str) -> bool:
+    """no-reply@* (Instagram, маркетплейсы) — не показываем карточки; продавцы не трогаем."""
+    f = (from_email or "").strip().lower()
+    if not f or "@" not in f:
+        return False
+    if _is_mailer_daemon_notice(f, ""):
+        return False
+    local = f.split("@", 1)[0]
+    return bool(_NOREPLY_LOCAL_RE.match(local))
+
+
 def _is_google_system_mail(from_email: str, from_name: str, subject: str) -> bool:
     """Системные письма Google (безопасность, уведомления) — в Telegram не шлём."""
     f = (from_email or "").strip().lower()
@@ -1159,6 +1176,9 @@ async def _process_mails_for_account_impl(
         )
 
         if (not is_spam_box) and _looks_like_spam(from_email, from_name, subject, body):
+            continue
+
+        if (not is_spam_box) and _is_noreply_automated_sender(from_email_clean_pre):
             continue
 
         try:

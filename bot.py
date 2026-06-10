@@ -246,6 +246,14 @@ async def _on_startup(bot: Bot) -> None:
     except Exception:
         logger.exception("Не удалось зарегистрировать меню /start /send /stop /reset /stat")
 
+    async def _redeploy_ping() -> None:
+        await asyncio.sleep(2)
+        from services.redeploy_notify import notify_users_after_redeploy
+
+        await notify_users_after_redeploy(bot)
+
+    asyncio.create_task(_redeploy_ping())
+
     wh = await bot.get_webhook_info()
     logger.info(
         "Telegram webhook: url=%r pending_updates=%s",
