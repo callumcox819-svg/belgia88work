@@ -66,9 +66,22 @@ async def run_proxy_health_check(session, user_id: int) -> ProxyHealthSummary:
     return await summarize_proxy_health(session, user_id)
 
 
-def mailing_may_start(summary: ProxyHealthSummary) -> Tuple[bool, str]:
+def mailing_may_start(summary: ProxyHealthSummary, *, fast: bool = False) -> Tuple[bool, str]:
     if summary.total <= 0:
         return False, "Нет SOCKS5 в «Прокси»."
+    if fast:
+        if summary.ok >= 1:
+            return (
+                True,
+                summary.format_lines()
+                + "\n<i>⚡ Фаст: один 🟢 SOCKS5 на всю рассылку (полный SMTP-таймаут).</i>",
+            )
+        return (
+            False,
+            summary.format_lines()
+            + "\n\n❌ <b>Фаст рассыл</b> требует хотя бы один 🟢 SOCKS5 (SMTP+STARTTLS OK). "
+            "Сейчас только 🟡/🔴 — выключите фаст или замените прокси.",
+        )
     if summary.ok >= 1:
         return True, summary.format_lines()
     if summary.unknown >= 1:
@@ -85,10 +98,14 @@ def mailing_may_start(summary: ProxyHealthSummary) -> Tuple[bool, str]:
     )
 
 
-async def preflight_proxies_for_mailing(db_user_id: int) -> Tuple[bool, ProxyHealthSummary, str]:
+async def preflight_proxies_for_mailing(
+    db_user_id: int,
+    *,
+    fast: bool = False,
+) -> Tuple[bool, ProxyHealthSummary, str]:
     async with db_session() as session:
         summary = await run_proxy_health_check(session, db_user_id)
-    ok, detail = mailing_may_start(summary)
+    ok, detail = mailing_may_start(summary, fast=fast)
     return ok, summary, detail
 
 

@@ -226,6 +226,7 @@ _TRANSIENT_CONNECTION_PATTERNS = [
     r"broken pipe",
     r"connection unexpectedly closed",
     r"connection aborted",
+    r"smtpserverdisconnected",
     r"errno 104",
     r"errno 54",
 ]

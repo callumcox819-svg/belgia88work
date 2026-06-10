@@ -104,15 +104,31 @@ def _proxy_try_limit(*, fast: bool, proxy_count: int) -> int:
     return min(proxy_count, MAIL_SMTP_MAX_PROXIES)
 
 
+async def pick_sticky_proxy_for_fast_mailing(
+    session: AsyncSession,
+    user_id: int,
+) -> Optional[Proxy]:
+    """Случайный 🟢 SOCKS5 для фаст-рассылки; если нет — None."""
+    proxies = await _list_active_socks5_proxies(session, user_id)
+    green = [p for p in proxies if p.is_active is True]
+    if green:
+        return random.choice(green)
+    return None
+
+
 def _order_proxies_for_send(
     user_id: int,
     proxies: List[Proxy],
     *,
     fast: bool,
     account_id: int | None = None,
+    sticky_proxy_id: int | None = None,
 ) -> List[Proxy]:
     if not proxies:
         return []
+    if sticky_proxy_id is not None:
+        pinned = [p for p in proxies if int(p.id) == int(sticky_proxy_id)]
+        return pinned[:1]
     uid = int(user_id)
     sticky_id = None
     if account_id is not None:
@@ -146,14 +162,25 @@ async def send_email_via_account_with_proxy(
     is_html: Optional[bool] = None,
     *,
     fast: bool = False,
+    sticky_proxy_id: int | None = None,
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     proxies = await _list_active_socks5_proxies(session, user_id)
     if not proxies:
         return False, NO_ACTIVE_PROXY, None
 
+    if sticky_proxy_id is not None:
+        proxies = [p for p in proxies if int(p.id) == int(sticky_proxy_id)]
+        if not proxies:
+            return False, NO_ACTIVE_PROXY, None
+
     order = _order_proxies_for_send(
-        int(user_id), proxies, fast=fast, account_id=int(account.id)
+        int(user_id),
+        proxies,
+        fast=fast,
+        account_id=int(account.id),
+        sticky_proxy_id=sticky_proxy_id,
     )
+    # fast=True — только быстрые ответы в чате; рассылка всегда с MAIL_SMTP_TIMEOUT_SEC
     smtp_tmo = REPLY_SMTP_TIMEOUT_SEC if fast else MAIL_SMTP_TIMEOUT_SEC
 
     last_err: str | None = None
@@ -164,7 +191,7 @@ async def send_email_via_account_with_proxy(
         pid = int(proxy.id)
         tried += 1
         logger.info(
-            "[SMTP send] try proxy_id=%s %s:%s account=%s -> %s (%s/%s fast=%s)",
+            "[SMTP send] try proxy_id=%s %s:%s account=%s -> %s (%s/%s fast=%s sticky=%s)",
             pid,
             proxy.host,
             proxy.port,
@@ -173,6 +200,7 @@ async def send_email_via_account_with_proxy(
             tried,
             len(order),
             fast,
+            sticky_proxy_id,
         )
         async with ProxySMTPContext(proxy):
             ok, err, msgid = await send_email_via_account(

@@ -15,10 +15,15 @@ class SendingState:
     sent_count: int = 0
     failed_count: int = 0
 
-    last_status: str = "-"  # NORMAL / FAST
+    last_status: str = "-"  # NORMAL / FAST / SENDING / DONE
     last_error: str = "-"
     last_failed_to: str = ""  # email получателя последней ошибки
     current_to: str = ""  # сейчас в работе (для /stat)
+
+    # Фаст рассыл: один SOCKS5 на всю сессию /send
+    fast_mailing: bool = False
+    sticky_proxy_id: int | None = None
+    fast_proxy_fail_streak: int = 0
 
     # --- метрики аккаунтов для статуса ---
     accounts_total: int = 0

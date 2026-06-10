@@ -20,6 +20,7 @@ from database import db_session
 from models import EmailAccount, OfferEmail, Offer, User, Proxy
 
 from services.mailing_send import (
+    MAIL_FAST_PROXY_FAIL_STOP,
     MAIL_VERIFY_SENT,
     mailing_send_overall_timeout_sec,
     send_mailing_one,
@@ -33,6 +34,7 @@ from services.sender import (
     SMTP_TIMEOUT_SEC,
     normalize_send_error,
     is_smtp_timeout_error,
+    should_retry_send_with_other_proxy,
 )
 from services.smtp_block_control import mark_account_smtp_blocked
 from services.smtp_account_check import is_account_no_access_error
@@ -337,7 +339,13 @@ async def _start_sending_inner(
 
     from services.mailing_proxy_health import preflight_proxies_for_mailing
 
-    px_ok, px_summary, px_detail = await preflight_proxies_for_mailing(int(db_user_id))
+    async with db_session() as session:
+        user_for_flags = await get_or_create_user(session, tg_user_id)
+        fast_mailing = await _user_fast_mailing_enabled(session, user_for_flags)
+
+    px_ok, px_summary, px_detail = await preflight_proxies_for_mailing(
+        int(db_user_id), fast=fast_mailing
+    )
     if not px_ok:
         try:
             await _edit_status_text(
@@ -356,9 +364,26 @@ async def _start_sending_inner(
 
     sendable_px = int(px_summary.ok) + int(px_summary.unknown)
 
-    async with db_session() as session:
-        user_for_flags = await get_or_create_user(session, tg_user_id)
-        fast_mailing = await _user_fast_mailing_enabled(session, user_for_flags)
+    sticky_proxy_id: int | None = None
+    sticky_proxy_label = ""
+    if fast_mailing:
+        from services.smtp_proxy_send import pick_sticky_proxy_for_fast_mailing
+
+        async with db_session() as session:
+            sticky = await pick_sticky_proxy_for_fast_mailing(session, int(db_user_id))
+        if not sticky:
+            try:
+                await _edit_status_text(
+                    status_msg,
+                    "❌ <b>Фаст рассыл не запущен</b>\n\n"
+                    "Нет 🟢 SOCKS5 после проверки. «Прокси» → проверить.",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            return
+        sticky_proxy_id = int(sticky.id)
+        sticky_proxy_label = f"{sticky.host}:{sticky.port} (id={sticky_proxy_id})"
 
     async with db_session() as session:
         state = SendingState(
@@ -371,7 +396,9 @@ async def _start_sending_inner(
             accounts_total=int(accounts_total_db),
             accounts_active=len(accounts),
             last_error="",
-            last_status="NORMAL",
+            last_status="FAST" if fast_mailing else "NORMAL",
+            fast_mailing=fast_mailing,
+            sticky_proxy_id=sticky_proxy_id,
         )
         set_sending_state(tg_user_id, state=state)
 
@@ -383,7 +410,7 @@ async def _start_sending_inner(
     from services.smtp_proxy_send import MAIL_SMTP_MAX_PROXIES, MAIL_SMTP_TIMEOUT_SEC
 
     proxy_mode = (
-        "⚡ <b>Фаст рассыл</b> — 1 SOCKS5 на письмо"
+        f"⚡ <b>Фаст рассыл</b> — один SOCKS5 на всю сессию: <code>{sticky_proxy_label}</code>"
         if fast_mailing
         else f"🌐 все живые SOCKS5 (до <b>{MAIL_SMTP_MAX_PROXIES}</b> попыток на письмо)"
     )
@@ -568,8 +595,13 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                 pass
             return
 
-    send_one_timeout = mailing_send_timeouts()
+    fast_mailing_loop = bool(getattr(state, "fast_mailing", False))
+    sticky_proxy_id_loop: int | None = getattr(state, "sticky_proxy_id", None)
+    send_one_timeout = mailing_send_overall_timeout_sec(fast_mailing=fast_mailing_loop)
     mail_max_per_account = max(0, int(os.getenv("MAIL_MAX_PER_ACCOUNT", "0")))
+
+    def _status_after_send() -> str:
+        return "FAST" if fast_mailing_loop else "NORMAL"
 
     try:
         while True:
@@ -613,7 +645,7 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                 timing = await load_timing(session, tg_user_id)
                 min_delay = float(timing.get("min_delay", 2.0))
                 max_delay = float(timing.get("max_delay", 4.0))
-                fast_mailing = await _user_fast_mailing_enabled(session, user)
+                fast_mailing = fast_mailing_loop
 
                 # Ящики по кругу + случайный умный пресет на каждое письмо.
                 acc: EmailAccount | None = None
@@ -646,7 +678,7 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                 tgt = targets[0]
                 to_addr = (tgt.email or "").strip()
                 state.current_to = to_addr
-                state.last_status = "SENDING"
+                state.last_status = "FAST" if fast_mailing else "SENDING"
                 set_sending_state(tg_user_id, state=state)
 
                 try:
@@ -668,6 +700,7 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                                 body,
                                 sender_name=sender_name,
                                 fast_mailing=fast_mailing,
+                                sticky_proxy_id=sticky_proxy_id_loop,
                             ),
                             timeout=send_one_timeout,
                         )
@@ -681,11 +714,37 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                 state.current_to = ""
                 if ok:
                     state.sent_count += 1
-                    state.last_status = "NORMAL"
+                    state.last_status = _status_after_send()
+                    state.fast_proxy_fail_streak = 0
                     account_send_counts[int(acc.id)] = account_send_counts.get(int(acc.id), 0) + 1
                     await _purge_target(session, db_user_id, tgt.id)
                 else:
-                    state.last_status = "NORMAL"
+                    state.last_status = _status_after_send()
+                    if fast_mailing and should_retry_send_with_other_proxy(err):
+                        state.fast_proxy_fail_streak = int(
+                            getattr(state, "fast_proxy_fail_streak", 0)
+                        ) + 1
+                        if state.fast_proxy_fail_streak >= MAIL_FAST_PROXY_FAIL_STOP:
+                            state.is_running = False
+                            state.last_error = normalize_send_error(
+                                f"PROXY_ERROR|fast_sticky_dead|"
+                                f"SOCKS5 id={sticky_proxy_id_loop} не держит Gmail SMTP "
+                                f"({MAIL_FAST_PROXY_FAIL_STOP} сбоев подряд). "
+                                f"Смените прокси или выключите фаст."
+                            )
+                            set_sending_state(tg_user_id, state=state)
+                            try:
+                                await bot.send_message(
+                                    chat_id,
+                                    "⏹ <b>Фаст рассыл остановлен</b>\n\n"
+                                    f"Прокси id=<code>{sticky_proxy_id_loop}</code> не проходит Gmail SMTP "
+                                    f"({MAIL_FAST_PROXY_FAIL_STOP} ошибок подряд).\n"
+                                    "Проверьте SOCKS5 или отключите «Фаст рассыл».",
+                                    parse_mode="HTML",
+                                )
+                            except Exception:
+                                pass
+                            break
                     blocked = await _handle_send_failure(
                         session=session,
                         db_user_id=db_user_id,

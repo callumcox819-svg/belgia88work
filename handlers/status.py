@@ -79,6 +79,8 @@ def render_status_text(
         sent = int(st.get("sent_count") or st.get("sent") or 0)
         failed = int(st.get("failed_count") or st.get("errors") or 0)
         mode = (st.get("last_status") or "-").upper() or "-"
+        if st.get("fast_mailing") and mode in ("NORMAL", "SENDING", "-"):
+            mode = "FAST"
         acc_t = st.get("accounts_total")
         acc_a = st.get("accounts_active")
         last_err = (st.get("last_error") or "").strip()
@@ -90,6 +92,8 @@ def render_status_text(
         sent = int(getattr(st, "sent_count", 0) or getattr(st, "sent", 0) or 0)
         failed = int(getattr(st, "failed_count", 0) or getattr(st, "errors", 0) or 0)
         mode = (getattr(st, "last_status", None) or "-").upper()
+        if getattr(st, "fast_mailing", False) and mode in ("NORMAL", "SENDING", "-"):
+            mode = "FAST"
         acc_t = getattr(st, "accounts_total", None)
         acc_a = getattr(st, "accounts_active", None)
         last_err = (getattr(st, "last_error", "") or "").strip()
