@@ -24,9 +24,7 @@ from services.offer_storage import offer_effective_title
 from services.placeholders import apply_placeholders
 from services.smtp_block_control import is_smtp_account_block_error, mark_account_smtp_blocked
 from services.smtp_delivery_verify import verify_message_in_sent
-from services.sender import send_email_via_account
-from services.smtp_proxy_guard import allow_direct_smtp
-from services.smtp_proxy_send import REPLY_SMTP_TIMEOUT_SEC
+from services.smtp_proxy_send import send_email_via_account_with_proxy
 from services.user_settings import get_user_setting, set_user_setting
 from sqlalchemy import func, select
 from utils.bg_jobs import is_running as bg_is_running
@@ -115,7 +113,6 @@ async def _menu_text(session, user: User) -> str:
         "<b>🧪 Тест маил</b>",
         "",
         "Тема и текст — <b>1:1 как /send</b>: оффер из БД, умный пресет, тема = шаблон OFFER.",
-        "Отправка — <b>без прокси</b> (прямой SMTP с ящика).",
         f"Получателей в списке: <b>{len(saved)}/{MAX_TEST_RECIPIENTS}</b>",
     ]
     if saved:
@@ -397,15 +394,16 @@ async def _run_mass_test(message: Message, tg_id: int) -> None:
                         session, tg_id=tg_id, user=user, offer=offer
                     )
                     sender_name = getattr(user, "sender_name", None)
-                    with allow_direct_smtp():
-                        ok, err, msgid = await send_email_via_account(
-                            account,
-                            to_email,
-                            subject,
-                            body,
-                            sender_name=sender_name,
-                            smtp_timeout_sec=REPLY_SMTP_TIMEOUT_SEC,
-                        )
+                    ok, err, msgid = await send_email_via_account_with_proxy(
+                        session,
+                        user_id,
+                        account,
+                        to_email,
+                        subject,
+                        body,
+                        sender_name=sender_name,
+                        mailing_fast=False,
+                    )
 
                 acc_email = account.email
                 subj_short = (subject or "")[:50]
@@ -468,8 +466,8 @@ async def _run_mass_test(message: Message, tg_id: int) -> None:
             if fail_lines:
                 summary += "\n\n<b>Ошибки:</b>\n" + "\n".join(fail_lines[:6])
             summary += (
-                "\n\n<i>Прямой SMTP без прокси. Смотрите Inbox и Спам. "
-                "Письмо собрано как /send (7bit/quoted-printable, без base64).</i>"
+                "\n\n<i>Смотрите Inbox и Спам. Письмо собрано как /send "
+                "(7bit/quoted-printable, без base64).</i>"
             )
             await status.edit_text(summary, parse_mode="HTML")
         except Exception as e:
