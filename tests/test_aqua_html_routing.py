@@ -15,12 +15,19 @@ class AquaHtmlRoutingTests(unittest.TestCase):
         self.assertEqual(aqua_service_for_html_dir("bpost_be"), "bpost_be")
 
     def test_template_paths_exist(self):
-        p = html_template_path("2dehands_be", "confirmation.html")
-        self.assertIsNotNone(p)
-        self.assertTrue(p.is_file())
-        p_new = html_template_path("2dehands_be", "confirmation_new.html")
-        self.assertIsNotNone(p_new)
-        self.assertTrue(p_new.is_file())
+        for service, files in (
+            ("2dehands_be", ("confirmation.html", "confirmation_new.html", "return.html")),
+            ("bpost_be", ("confirmation.html", "return.html")),
+        ):
+            for name in files:
+                p = html_template_path(service, name)
+                self.assertIsNotNone(p, msg=f"{service}/{name}")
+                self.assertTrue(p.is_file(), msg=f"{service}/{name}")
+
+    def test_service_picks_different_dirs(self):
+        go_2d = html_template_path("2dehands_be", "confirmation.html")
+        go_bp = html_template_path("bpost_be", "confirmation.html")
+        self.assertNotEqual(go_2d, go_bp)
 
 
 if __name__ == "__main__":
