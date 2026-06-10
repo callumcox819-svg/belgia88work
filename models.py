@@ -236,6 +236,24 @@ class OfferEmail(Base):
 # =========================
 # SENT EMAILS
 # =========================
+class MailingSendLog(Base):
+    """Какому email какой offer ушёл при /send — источник правды для входящих (poputka88)."""
+
+    __tablename__ = "mailing_send_log"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    offer_id = Column(ForeignKey("offers.id", ondelete="CASCADE"), nullable=False, index=True)
+    recipient_email = Column(String, nullable=False, index=True)
+    mail_subject = Column(String, nullable=True)
+    from_account_email = Column(String, nullable=True)
+    offer_email_id = Column(Integer, nullable=True)
+    sent_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User")
+    offer = relationship("Offer")
+
+
 class SentEmail(Base):
     __tablename__ = "sent_emails"
     __table_args__ = (UniqueConstraint("user_id", "email", name="uq_sent_email_user_email"),)
@@ -362,6 +380,10 @@ class IncomingMail(Base):
     ad_url = Column(Text, nullable=True)
     generated_link = Column(Text, nullable=True)
     product_title = Column(String(500), nullable=True)
+    offer_price = Column(String(64), nullable=True)
+    photo_url = Column(Text, nullable=True)
+    service_label = Column(String(64), nullable=True)
+    mailing_bound = Column(Boolean, default=False, nullable=False, server_default="false")
 
     resolved_offer_id = Column(ForeignKey("offers.id", ondelete="SET NULL"), nullable=True, index=True)
     resolved_offer_email_id = Column(ForeignKey("offer_emails.id", ondelete="SET NULL"), nullable=True, index=True)

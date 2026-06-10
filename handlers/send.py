@@ -182,6 +182,33 @@ async def _purge_target(session: AsyncSession, user_id: int, offer_email_id: int
         await _safe_rollback(session)
 
 
+async def _record_successful_send(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    tgt: OfferEmail,
+    subject: str,
+    from_account_email: str,
+) -> None:
+    """Журнал: этому продавцу ушёл именно этот offer (poputka88 recipients.lead_id)."""
+    from services.mailing_send_log import record_mailing_send
+
+    try:
+        await record_mailing_send(
+            session,
+            user_id=int(user_id),
+            offer_id=int(tgt.offer_id),
+            recipient_email=(tgt.email or "").strip(),
+            mail_subject=subject,
+            from_account_email=from_account_email,
+            offer_email_id=int(tgt.id),
+        )
+        await _safe_commit(session)
+    except Exception:
+        await _safe_rollback(session)
+        logger.exception("record_mailing_send failed offer_id=%s", getattr(tgt, "offer_id", None))
+
+
 async def _build_message_for_target(session: AsyncSession, tg_user_id: int, tgt: OfferEmail) -> Tuple[str, str]:
     """Return (subject, body) for a single OfferEmail target."""
 
@@ -784,6 +811,13 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                             account_send_counts[int(acc_w.id)] = (
                                 account_send_counts.get(int(acc_w.id), 0) + 1
                             )
+                            await _record_successful_send(
+                                session,
+                                user_id=db_user_id,
+                                tgt=tgt_w,
+                                subject=subj_w,
+                                from_account_email=(acc_w.email or "").strip(),
+                            )
                             await _purge_target(session, db_user_id, tgt_w.id)
                         else:
                             blocked = await _handle_send_failure(
@@ -875,6 +909,13 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                     account_send_counts[int(acc.id)] = account_send_counts.get(
                         int(acc.id), 0
                     ) + 1
+                    await _record_successful_send(
+                        session,
+                        user_id=db_user_id,
+                        tgt=tgt,
+                        subject=subject,
+                        from_account_email=(acc.email or "").strip(),
+                    )
                     await _purge_target(session, db_user_id, tgt.id)
                 else:
                     state.last_status = _status_after_send()

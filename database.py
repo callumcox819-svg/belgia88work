@@ -199,13 +199,58 @@ async def _ensure_incoming_mail_telegram_message_id_column() -> None:
 
 
 async def _ensure_incoming_mail_product_title_column() -> None:
-    """Снимок названия товара на момент входящего (poputka88 — без путаницы Re: vs email)."""
+    """Снимок лида на момент входящего (poputka88)."""
     if engine.dialect.name != "postgresql":
         return
 
     async with engine.begin() as conn:
         await conn.execute(
             text("ALTER TABLE incoming_mails ADD COLUMN IF NOT EXISTS product_title VARCHAR(500)")
+        )
+        await conn.execute(
+            text("ALTER TABLE incoming_mails ADD COLUMN IF NOT EXISTS offer_price VARCHAR(64)")
+        )
+        await conn.execute(
+            text("ALTER TABLE incoming_mails ADD COLUMN IF NOT EXISTS photo_url TEXT")
+        )
+        await conn.execute(
+            text("ALTER TABLE incoming_mails ADD COLUMN IF NOT EXISTS service_label VARCHAR(64)")
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE incoming_mails ADD COLUMN IF NOT EXISTS mailing_bound BOOLEAN "
+                "NOT NULL DEFAULT FALSE"
+            )
+        )
+
+
+async def _ensure_mailing_send_log_table() -> None:
+    """Журнал отправок: email → offer_id (poputka recipients.lead_id)."""
+    if engine.dialect.name != "postgresql":
+        return
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS mailing_send_log (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    offer_id INTEGER NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
+                    recipient_email VARCHAR NOT NULL,
+                    mail_subject VARCHAR,
+                    from_account_email VARCHAR,
+                    offer_email_id INTEGER,
+                    sent_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (NOW() AT TIME ZONE 'utc')
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_mailing_send_log_user_rcpt "
+                "ON mailing_send_log (user_id, recipient_email, sent_at DESC)"
+            )
         )
 
 
@@ -315,6 +360,11 @@ async def init_db() -> None:
         await _ensure_incoming_mail_product_title_column()
     except Exception as e:
         log.error("Failed incoming_mails.product_title migration: %s", e)
+
+    try:
+        await _ensure_mailing_send_log_table()
+    except Exception as e:
+        log.error("Failed mailing_send_log migration: %s", e)
 
     try:
         await _ensure_incoming_mail_telegram_message_id_column()

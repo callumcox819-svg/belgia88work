@@ -1679,6 +1679,7 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
             resolved_offer_id=getattr(mail, "resolved_offer_id", None),
             mail_ad_url=(getattr(mail, "ad_url", "") or "").strip() or None,
             inbox_email=inbox_email,
+            mailing_bound=bool(getattr(mail, "mailing_bound", False)),
         )
 
         if not url:
@@ -1697,6 +1698,7 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
 
         if offer:
             mail.resolved_offer_id = int(offer.id)
+            mail.mailing_bound = True
         offer, url, title, price, offer_image = await finalize_aqua_listing_context(
             session,
             user_id=int(tg_user.id),
@@ -1860,6 +1862,7 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
             resolved_offer_id=getattr(mail_pre, "resolved_offer_id", None) if mail_pre else None,
             mail_ad_url=(getattr(mail_pre, "ad_url", "") or "").strip() if mail_pre else None,
             inbox_email=inbox_email,
+            mailing_bound=bool(getattr(mail_pre, "mailing_bound", False)) if mail_pre else False,
         )
 
         if not url:

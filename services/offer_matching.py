@@ -901,19 +901,24 @@ async def resolve_offer_for_aqua_link(
     resolved_offer_id: int | None = None,
     mail_ad_url: str | None = None,
     inbox_email: str | None = None,
+    mailing_bound: bool = False,
 ) -> tuple[Offer | None, str]:
-    """Кнопка «Создать ссылку» — тот же лот, что карточка письма."""
-    return await resolve_listing_for_incoming_mail(
+    """Кнопка «Создать ссылку» — лот из журнала рассылки или темы (poputka88)."""
+    from services.incoming_lead_resolve import resolve_offer_for_incoming_lead
+
+    off, url, _how, _snap = await resolve_offer_for_incoming_lead(
         session,
         user_id=int(user_id),
-        from_email=from_email,
+        contact_email=from_email,
         subject=subject,
         from_name=from_name,
         body_text=body_text,
         resolved_offer_id=resolved_offer_id,
         mail_ad_url=mail_ad_url,
         inbox_email=inbox_email,
+        mailing_bound=mailing_bound,
     )
+    return off, url
 
 
 async def list_offers_for_seller_email(
