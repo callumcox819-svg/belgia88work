@@ -21,6 +21,7 @@ from models import EmailAccount, OfferEmail, Offer, User, Proxy
 
 from services.mailing_send import (
     MAIL_FAST_PARALLEL_ACCOUNTS,
+    fast_wave_size,
     MAIL_VERIFY_SENT,
     mailing_send_overall_timeout_sec,
     send_mailing_one,
@@ -658,12 +659,20 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                             pass
                         break
 
+                    from services.smtp_proxy_send import _list_active_socks5_proxies
+
+                    active_proxies = await _list_active_socks5_proxies(session, db_user_id)
                     wave_cap = (
                         MAIL_FAST_PARALLEL_ACCOUNTS
                         if MAIL_FAST_PARALLEL_ACCOUNTS > 0
                         else len(eligible_accounts)
                     )
-                    wave_n = min(len(targets), len(eligible_accounts), wave_cap)
+                    wave_n = fast_wave_size(
+                        proxy_count=len(active_proxies),
+                        accounts=len(eligible_accounts),
+                        targets=len(targets),
+                        wave_cap=wave_cap,
+                    )
                     wave_accounts = [
                         eligible_accounts[(acc_idx + i) % len(eligible_accounts)]
                         for i in range(wave_n)
@@ -690,9 +699,11 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                     set_sending_state(tg_user_id, state=state)
 
                     logger.info(
-                        "[mailing fast wave] accounts=%s targets=%s",
+                        "[mailing fast wave] accounts=%s targets=%s proxies=%s cap=%s",
                         wave_n,
                         [t.email for t in wave_targets[:5]],
+                        len(active_proxies),
+                        wave_cap,
                     )
 
                     async def _parallel_send(

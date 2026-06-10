@@ -43,6 +43,25 @@ MAIL_SEND_RETRY_PAUSE_SEC = max(
 MAIL_FAST_SEND_RETRY_PAUSE_SEC = max(
     0.0, min(2.0, float(os.getenv("MAIL_FAST_SEND_RETRY_PAUSE_SEC", "0.15")))
 )
+# Сколько одновременных SMTP на один SOCKS5 (2 прокси × 6 = 12 волна, не 30)
+MAIL_FAST_MAX_PARALLEL_PER_PROXY = max(
+    2, min(20, int(os.getenv("MAIL_FAST_MAX_PARALLEL_PER_PROXY", "6")))
+)
+
+
+def fast_wave_size(
+    *,
+    proxy_count: int,
+    accounts: int,
+    targets: int,
+    wave_cap: int,
+) -> int:
+    """Фаст-волна: не больше proxy_count × N одновременных SMTP (иначе таймауты)."""
+    if proxy_count <= 0 or accounts <= 0 or targets <= 0:
+        return 0
+    proxy_limited = proxy_count * MAIL_FAST_MAX_PARALLEL_PER_PROXY
+    hard_cap = wave_cap if wave_cap > 0 else accounts
+    return max(1, min(targets, accounts, hard_cap, proxy_limited))
 
 
 def mailing_send_overall_timeout_sec(*, fast_mailing: bool = False) -> int:
@@ -135,17 +154,33 @@ async def send_mailing_one_parallel(
     body: str,
     sender_name: Optional[str] = None,
 ) -> Tuple[bool, Optional[str], Optional[str]]:
-    """Фаст-волна: изолированный SMTP (параллель с другими ящиками)."""
-    return await send_email_via_account_with_proxy_isolated(
-        session,
-        int(user_id),
-        account,
-        to_email,
-        subject,
-        body,
-        sender_name=sender_name,
-        mailing_fast=True,
-    )
+    """Фаст-волна: изолированный SMTP (параллель с другими ящиками) + retry как в send_mailing_one."""
+    last_err: Optional[str] = None
+    last_msgid: Optional[str] = None
+
+    for attempt in range(1, MAIL_FAST_SEND_RETRIES + 1):
+        ok, err, msgid = await send_email_via_account_with_proxy_isolated(
+            session,
+            int(user_id),
+            account,
+            to_email,
+            subject,
+            body,
+            sender_name=sender_name,
+            mailing_fast=True,
+        )
+        err = normalize_send_error(err)
+        last_err = err
+        last_msgid = msgid
+        if ok:
+            return True, None, msgid
+        if _retry_after_failure(err) and attempt < MAIL_FAST_SEND_RETRIES:
+            if MAIL_FAST_SEND_RETRY_PAUSE_SEC > 0:
+                await asyncio.sleep(MAIL_FAST_SEND_RETRY_PAUSE_SEC)
+            continue
+        return False, err, msgid
+
+    return False, last_err or "UNKNOWN", last_msgid
 
 
 # совместимость
