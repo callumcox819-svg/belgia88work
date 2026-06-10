@@ -80,7 +80,7 @@ def _format_validation_status(
         f"⛔ Повтор продавца (пропуск): <b>{added_blacklist}</b>",
         f"✂️ Коротких ников: <b>{short_nicks}</b>",
         f"📬 Без email: <b>{no_email}</b>",
-        f"⚠️ Ошибок: <b>{errors}</b>",
+        f"⚠️ Сбоев API: <b>{errors}</b>",
     ]
     return "\n".join(l for l in lines if l is not None)
 

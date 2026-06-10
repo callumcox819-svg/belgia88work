@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
 import aiohttp
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -19,6 +22,19 @@ class CacheItem:
 # cache key includes URL to avoid mixing different providers/endpoints
 _CACHE: dict[str, CacheItem] = {}
 _CACHE_TTL_SEC = 60 * 60 * 6  # 6 часов
+
+_TRANSIENT_REASONS = frozenset({"connection_error", "timeout"})
+_TRANSIENT_HTTP = frozenset({408, 429, 500, 502, 503, 504})
+_DEFINITIVE_BAD_REASONS = frozenset(
+    {
+        "invalid_smtp",
+        "rejected",
+        "invalid_format",
+        "invalid_domain",
+        "disposable",
+        "catch_all",
+    }
+)
 
 _SESSION: aiohttp.ClientSession | None = None
 
@@ -43,10 +59,68 @@ def _cache_get(url: str, email: str) -> CacheItem | None:
 
 
 def _cache_set(url: str, email: str, ok: bool, raw: dict) -> None:
+    if not _should_cache_result(raw):
+        return
     k = _cache_key(url, email)
     if not k.strip(":"):
         return
     _CACHE[k] = CacheItem(ok=bool(ok), ts=time.time(), raw=raw or {})
+
+
+def _validemail_api_timeout() -> int:
+    """Серверный SMTP-timeout (validemail.co query param, 2–30 с)."""
+    try:
+        return max(4, min(30, int(os.getenv("VALIDEMAIL_API_TIMEOUT", "15"))))
+    except (TypeError, ValueError):
+        return 15
+
+
+def _validemail_max_retries() -> int:
+    try:
+        return max(1, min(5, int(os.getenv("VALIDEMAIL_MAX_RETRIES", "3"))))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _is_transient_failure(raw: object) -> bool:
+    """Сеть / rate limit / connection_error — можно повторить."""
+    if not isinstance(raw, dict):
+        return True
+    if raw.get("error") is not None and not any(
+        k in raw for k in ("status", "isDeliverable", "State", "IsValid", "score", "Score")
+    ):
+        return True
+    try:
+        st = int(raw.get("_http_status") or 0)
+        if st in _TRANSIENT_HTTP:
+            return True
+        if st in (401, 403, 402):
+            return True
+    except (TypeError, ValueError):
+        pass
+    reason = str(raw.get("reason") or raw.get("Reason") or "").lower().strip()
+    return reason in _TRANSIENT_REASONS
+
+
+def _should_cache_result(raw: object) -> bool:
+    """Не кэшируем таймауты и 429 — иначе «валидные» теряются на час."""
+    return not _is_transient_failure(raw)
+
+
+def _retry_delay_sec(attempt: int, raw: dict) -> float:
+    ra = raw.get("_retry_after")
+    if ra is not None:
+        try:
+            return min(30.0, max(0.3, float(ra)))
+        except (TypeError, ValueError):
+            pass
+    try:
+        st = int(raw.get("_http_status") or 0)
+    except (TypeError, ValueError):
+        st = 0
+    if st == 429:
+        return min(30.0, 1.0 * (2**attempt))
+    return min(6.0, 0.35 * (2**attempt))
 
 
 async def _get_session() -> aiohttp.ClientSession:
@@ -54,7 +128,11 @@ async def _get_session() -> aiohttp.ClientSession:
     if _SESSION and not _SESSION.closed:
         return _SESSION
 
-    timeout = aiohttp.ClientTimeout(total=12, connect=5, sock_connect=5, sock_read=10)
+    api_t = _validemail_api_timeout()
+    total = max(20, api_t + 12)
+    timeout = aiohttp.ClientTimeout(
+        total=total, connect=8, sock_connect=8, sock_read=api_t + 8
+    )
     connector = aiohttp.TCPConnector(limit=300, ttl_dns_cache=300)
     _SESSION = aiohttp.ClientSession(timeout=timeout, connector=connector)
     return _SESSION
@@ -102,21 +180,45 @@ _BAD_EMAIL_STATES = frozenset(
 
 def _normalize_ok(data: object) -> bool:
     """
-    Универсальная нормализация под разные ответы ValidEmail.
-    validemail.co: IsValid, State=Deliverable, Score (см. docs).
-  VALIDEMAIL_STRICT=1 (по умолчанию): не брать Unknown + Score≥80 — частая причина отбоев.
+    validemail.co API v1: status, reason, score, isDeliverable (см. api-doc).
+    Плюс legacy PascalCase (IsValid, State, Score).
     """
     if not isinstance(data, dict):
-        return False
-
-    state = str(data.get("State") or data.get("state") or "").lower().strip()
-    if state in _BAD_EMAIL_STATES:
         return False
 
     strict = _validemail_strict_mode()
     min_score = _validemail_min_score()
 
-    # validemail.co / validemail.net (PascalCase)
+    status = str(
+        data.get("status") or data.get("State") or data.get("state") or ""
+    ).lower().strip()
+    reason = str(data.get("reason") or data.get("Reason") or "").lower().strip()
+
+    if reason in _TRANSIENT_REASONS:
+        return False
+
+    # --- validemail.co v1 (официальный ответ) ---
+    if "isDeliverable" in data:
+        if reason in _DEFINITIVE_BAD_REASONS or status in _BAD_EMAIL_STATES:
+            return False
+        if data.get("isDeliverable") is True and status == "deliverable":
+            if strict:
+                try:
+                    score = int(data.get("score") if data.get("score") is not None else 0)
+                    if score < min_score:
+                        return False
+                except (TypeError, ValueError):
+                    pass
+            return True
+        if not strict and data.get("isDeliverable") is True:
+            return True
+        return False
+
+    state = status
+    if state in _BAD_EMAIL_STATES:
+        return False
+
+    # validemail.co / validemail.net (PascalCase, legacy)
     if data.get("IsValid") is True or data.get("isValid") is True:
         if strict and state in _BAD_EMAIL_STATES:
             return False
@@ -175,10 +277,11 @@ def _build_request(url: str, api_key: str, email: str) -> tuple[dict, dict]:
     params: dict = {}
 
     if "validemail.co" in ul:
-        # https://validemail.co/api/v1/validate?email=...
+        # https://validemail.co/api/v1/validate?email=...&timeout=...
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         params["email"] = email
+        params["timeout"] = str(_validemail_api_timeout())
         return headers, params
 
     # default / legacy style (query api_key)
@@ -188,6 +291,28 @@ def _build_request(url: str, api_key: str, email: str) -> tuple[dict, dict]:
 
 
 ProgressCb = Callable[[int, int, int, int], None]
+
+
+async def _fetch_validemail_once(
+    email_lc: str,
+    *,
+    api_key: str,
+    url: str,
+    use_ssl_verify: bool,
+) -> tuple[bool, dict]:
+    s = await _get_session()
+    headers, params = _build_request(url, api_key, email_lc)
+    ssl = None if use_ssl_verify else False
+    async with s.get(url, params=params, headers=headers, ssl=ssl) as r:
+        data = await r.json(content_type=None)
+        raw = data if isinstance(data, dict) else {"raw": str(data)}
+        if isinstance(raw, dict):
+            raw["_http_status"] = int(r.status)
+            ra = r.headers.get("Retry-After")
+            if ra:
+                raw["_retry_after"] = ra
+        ok = _normalize_ok(data) if int(r.status) == 200 else False
+        return ok, raw
 
 
 async def _check_one(
@@ -208,7 +333,6 @@ async def _check_one(
 
     cached = _cache_get(url, email_lc)
     if cached:
-        # cached тоже считаем как "done"
         async with lock:
             counters["done"] += 1
             if progress_cb:
@@ -217,6 +341,9 @@ async def _check_one(
                 except Exception:
                     pass
         return email, cached.ok, cached.raw
+
+    max_attempts = _validemail_max_retries()
+    last_raw: dict = {"error": "not_checked"}
 
     async with semaphore:
         async with lock:
@@ -228,22 +355,40 @@ async def _check_one(
                     pass
 
         try:
-            s = await _get_session()
-            headers, params = _build_request(url, api_key, email_lc)
-            ssl = None if use_ssl_verify else False
-            async with s.get(url, params=params, headers=headers, ssl=ssl) as r:
-                # иногда сервис возвращает json с неправильным content-type
-                data = await r.json(content_type=None)
-                raw = data if isinstance(data, dict) else {"raw": str(data)}
-                if isinstance(raw, dict):
-                    raw["_http_status"] = int(r.status)
-                ok = _normalize_ok(data) if int(r.status) == 200 else False
-                _cache_set(url, email_lc, ok, raw)
-                return email, ok, raw
-        except Exception as e:
-            raw = {"error": str(e)}
-            _cache_set(url, email_lc, False, raw)
-            return email, False, raw
+            ok = False
+            for attempt in range(max_attempts):
+                try:
+                    ok, last_raw = await _fetch_validemail_once(
+                        email_lc,
+                        api_key=api_key,
+                        url=url,
+                        use_ssl_verify=use_ssl_verify,
+                    )
+                except Exception as e:
+                    last_raw = {"error": str(e)}
+                    ok = False
+
+                if ok:
+                    _cache_set(url, email_lc, True, last_raw)
+                    return email, True, last_raw
+
+                if not _is_transient_failure(last_raw) or attempt >= max_attempts - 1:
+                    if _should_cache_result(last_raw):
+                        _cache_set(url, email_lc, False, last_raw)
+                    return email, False, last_raw
+
+                delay = _retry_delay_sec(attempt, last_raw)
+                logger.debug(
+                    "validemail retry %s/%s for %s in %.1fs (%s)",
+                    attempt + 2,
+                    max_attempts,
+                    email_lc,
+                    delay,
+                    last_raw.get("reason") or last_raw.get("error") or last_raw.get("_http_status"),
+                )
+                await asyncio.sleep(delay)
+
+            return email, False, last_raw
         finally:
             async with lock:
                 counters["in_use"] -= 1

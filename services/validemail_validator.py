@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -157,9 +158,12 @@ def _is_api_failure(_ok: bool, raw: object) -> bool:
     """Сбой API/сети. Ответ «email не существует» — не ошибка."""
     if not isinstance(raw, dict):
         return True
+    reason = str(raw.get("reason") or raw.get("Reason") or "").lower().strip()
+    if reason in ("connection_error", "timeout"):
+        return True
     try:
         st = int(raw.get("_http_status"))
-        if st in (401, 403, 429) or st >= 500:
+        if st in (401, 403, 402, 429) or st >= 500:
             return True
     except (TypeError, ValueError):
         pass
@@ -434,7 +438,13 @@ async def _validate_offers_old(
     seen_valid_emails: set[str] = set()
     state_lock = asyncio.Lock()
     n_keys = len(api_keys)
-    per_key_limit = max(4, limit // n_keys) if n_keys > 1 else limit
+    per_key_env = (os.getenv("VALIDEMAIL_CONCURRENCY_PER_KEY") or "").strip()
+    if per_key_env.isdigit():
+        per_key_limit = max(2, int(per_key_env))
+    elif n_keys > 1:
+        per_key_limit = max(4, limit // n_keys)
+    else:
+        per_key_limit = limit
     parallel_pool = per_key_limit * n_keys if n_keys > 1 else limit
     sellers_completed = 0
 
@@ -605,6 +615,16 @@ async def _validate_offers_old(
             if stats is not None:
                 stats["seller_index"] = sellers_completed
             _refresh_stats()
+
+    found_count = sum(1 for f in found_by_idx if f)
+    if stats is not None:
+        logger.info(
+            "validemail done: sellers=%s found=%s checked=%s api_errors=%s",
+            len(prepared),
+            found_count,
+            int(stats.get("emails_checked") or 0),
+            int(stats.get("api_errors") or 0),
+        )
 
     # 3) собираем результат
     out_rows: list[dict[str, Any]] = []
