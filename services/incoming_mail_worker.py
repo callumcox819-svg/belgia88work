@@ -236,6 +236,20 @@ def _is_amazon_system_domain(domain: str) -> bool:
     return d.endswith(".amazon.com") or d.endswith(".amazon.co.jp")
 
 
+def _is_snapchat_system_domain(domain: str) -> bool:
+    d = (domain or "").strip().lower()
+    return bool(d) and (d == "snapchat.com" or d.endswith(".snapchat.com"))
+
+
+def _is_alibaba_system_domain(domain: str) -> bool:
+    d = (domain or "").strip().lower()
+    if not d:
+        return False
+    if d == "alibaba.com" or d.endswith(".alibaba.com"):
+        return True
+    return d == "alibaba-inc.com" or d.endswith(".alibaba-inc.com")
+
+
 def _is_platform_system_mail(from_email: str, from_name: str, subject: str = "") -> bool:
     """Коды верификации / уведомления маркетплейсов (Wallapop и т.д.)."""
     f = (from_email or "").strip().lower()
@@ -263,6 +277,14 @@ def _is_platform_system_mail(from_email: str, from_name: str, subject: str = "")
         return True
     name_compact = name.replace(" ", "")
     if "amazon" in name_compact and _is_amazon_system_domain(domain):
+        return True
+    if _is_snapchat_system_domain(domain):
+        return True
+    if "snapchat" in name_compact and _is_snapchat_system_domain(domain):
+        return True
+    if _is_alibaba_system_domain(domain):
+        return True
+    if "alibaba" in name_compact and _is_alibaba_system_domain(domain):
         return True
     return False
 

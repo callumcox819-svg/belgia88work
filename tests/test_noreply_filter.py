@@ -69,6 +69,24 @@ class TestNoreplyFilter(unittest.TestCase):
         )
         self.assertTrue(_is_platform_system_mail("no-reply@amazon.com", "Amazon"))
 
+    def test_blocks_snapchat_verification(self):
+        self.assertTrue(
+            _is_automated_system_sender(
+                "verification@verify.snapchat.com",
+                "Team Snapchat",
+                "Confirm Your Email Address",
+            )
+        )
+
+    def test_blocks_alibaba_notice(self):
+        self.assertTrue(
+            _is_automated_system_sender(
+                "credit@notice.alibaba.com",
+                "Alibaba",
+                "Payment for your Trade Assurance order",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
