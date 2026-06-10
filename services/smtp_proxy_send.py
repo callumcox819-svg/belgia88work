@@ -151,6 +151,13 @@ def _order_proxies_for_send(
     return order[:limit]
 
 
+def _proxy_deactivate_on_fail(*, mailing_fast: bool, err: str | None) -> bool:
+    """В фаст-режиме не ставим 🔴 на прокси — только last_error (ложные disconnect)."""
+    if mailing_fast:
+        return False
+    return is_definite_proxy_failure(err)
+
+
 async def send_email_via_account_with_proxy(
     session: AsyncSession,
     user_id: int,
@@ -163,6 +170,7 @@ async def send_email_via_account_with_proxy(
     *,
     fast: bool = False,
     sticky_proxy_id: int | None = None,
+    mailing_fast: bool = False,
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     proxies = await _list_active_socks5_proxies(session, user_id)
     if not proxies:
@@ -231,7 +239,7 @@ async def send_email_via_account_with_proxy(
             (err or "")[:200],
         )
 
-        dead = is_definite_proxy_failure(err)
+        dead = _proxy_deactivate_on_fail(mailing_fast=mailing_fast, err=err)
         try:
             await ProxyManager.note_proxy_failure(
                 session,
@@ -264,6 +272,7 @@ async def send_batch_via_account_with_proxy(
     sender_name: Optional[str] = None,
     *,
     fast: bool = False,
+    mailing_fast: bool = False,
 ) -> List[Tuple[bool, Optional[str]]]:
     """Отправка пачки: неудачные адреса повторяются на следующем SOCKS5 (не «3 из 10»)."""
     n = len(items)
@@ -325,7 +334,7 @@ async def send_batch_via_account_with_proxy(
             return merged
 
         last_err = next((e for o, e in merged if not o and e), None)
-        dead = is_definite_proxy_failure(last_err)
+        dead = _proxy_deactivate_on_fail(mailing_fast=mailing_fast, err=last_err)
         try:
             await ProxyManager.note_proxy_failure(
                 session,

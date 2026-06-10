@@ -20,9 +20,10 @@ from database import db_session
 from models import EmailAccount, OfferEmail, Offer, User, Proxy
 
 from services.mailing_send import (
-    MAIL_FAST_PROXY_FAIL_STOP,
+    MAIL_FAST_BATCH_SIZE,
     MAIL_VERIFY_SENT,
     mailing_send_overall_timeout_sec,
+    send_mailing_batch,
     send_mailing_one,
 )
 from services.users import get_or_create_user
@@ -34,7 +35,6 @@ from services.sender import (
     SMTP_TIMEOUT_SEC,
     normalize_send_error,
     is_smtp_timeout_error,
-    should_retry_send_with_other_proxy,
 )
 from services.smtp_block_control import mark_account_smtp_blocked
 from services.smtp_account_check import is_account_no_access_error
@@ -343,9 +343,7 @@ async def _start_sending_inner(
         user_for_flags = await get_or_create_user(session, tg_user_id)
         fast_mailing = await _user_fast_mailing_enabled(session, user_for_flags)
 
-    px_ok, px_summary, px_detail = await preflight_proxies_for_mailing(
-        int(db_user_id), fast=fast_mailing
-    )
+    px_ok, px_summary, px_detail = await preflight_proxies_for_mailing(int(db_user_id))
     if not px_ok:
         try:
             await _edit_status_text(
@@ -364,27 +362,6 @@ async def _start_sending_inner(
 
     sendable_px = int(px_summary.ok) + int(px_summary.unknown)
 
-    sticky_proxy_id: int | None = None
-    sticky_proxy_label = ""
-    if fast_mailing:
-        from services.smtp_proxy_send import pick_sticky_proxy_for_fast_mailing
-
-        async with db_session() as session:
-            sticky = await pick_sticky_proxy_for_fast_mailing(session, int(db_user_id))
-        if not sticky:
-            try:
-                await _edit_status_text(
-                    status_msg,
-                    "❌ <b>Фаст рассыл не запущен</b>\n\n"
-                    "Нет 🟢 SOCKS5 после проверки. «Прокси» → проверить.",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-            return
-        sticky_proxy_id = int(sticky.id)
-        sticky_proxy_label = f"{sticky.host}:{sticky.port} (id={sticky_proxy_id})"
-
     async with db_session() as session:
         state = SendingState(
             user_id=tg_user_id,
@@ -398,7 +375,6 @@ async def _start_sending_inner(
             last_error="",
             last_status="FAST" if fast_mailing else "NORMAL",
             fast_mailing=fast_mailing,
-            sticky_proxy_id=sticky_proxy_id,
         )
         set_sending_state(tg_user_id, state=state)
 
@@ -410,9 +386,15 @@ async def _start_sending_inner(
     from services.smtp_proxy_send import MAIL_SMTP_MAX_PROXIES, MAIL_SMTP_TIMEOUT_SEC
 
     proxy_mode = (
-        f"⚡ <b>Фаст рассыл</b> — один SOCKS5 на всю сессию: <code>{sticky_proxy_label}</code>"
+        f"⚡ <b>Фаст рассыл</b> — без пауз, пачки по <b>{MAIL_FAST_BATCH_SIZE}</b> писем "
+        f"(все 🟢/🟡 SOCKS5, до <b>{MAIL_SMTP_MAX_PROXIES}</b> попыток, прокси не 🔴 на сбой)"
         if fast_mailing
         else f"🌐 все живые SOCKS5 (до <b>{MAIL_SMTP_MAX_PROXIES}</b> попыток на письмо)"
+    )
+    scheme_line = (
+        f"Схема: <b>1 ящик → до {MAIL_FAST_BATCH_SIZE} адресов</b> за одно SMTP · <b>без пауз</b>\n"
+        if fast_mailing
+        else "Схема: <b>1 ящик → 1 умный пресет → 1 адрес</b> → пауза MIN–MAX\n"
     )
 
     try:
@@ -423,7 +405,7 @@ async def _start_sending_inner(
             f"{px_detail}\n"
             f"В рассылке SOCKS5: <b>{sendable_px}</b> (🔴 не используются)\n"
             f"{proxy_mode}\n"
-            f"Схема: <b>1 ящик → 1 умный пресет → 1 адрес</b> → пауза MIN–MAX\n"
+            f"{scheme_line}"
             f"Успех в /stat: <b>{'IMAP Sent' if MAIL_VERIFY_SENT else 'SMTP 250+NOOP'}</b>\n"
             f"Таймаут SOCKS5: <b>{MAIL_SMTP_TIMEOUT_SEC}</b> с · повторов <b>{MAIL_SEND_RETRIES}</b>\n\n"
             "<i>Таймаут при отправке ≠ мёртвый прокси: бот пробует другие из списка. "
@@ -596,7 +578,6 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
             return
 
     fast_mailing_loop = bool(getattr(state, "fast_mailing", False))
-    sticky_proxy_id_loop: int | None = getattr(state, "sticky_proxy_id", None)
     send_one_timeout = mailing_send_overall_timeout_sec(fast_mailing=fast_mailing_loop)
     mail_max_per_account = max(0, int(os.getenv("MAIL_MAX_PER_ACCOUNT", "0")))
 
@@ -675,101 +656,126 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                     acc = rotation_accounts[acc_idx % len(rotation_accounts)]
                 acc_idx += 1
 
-                tgt = targets[0]
-                to_addr = (tgt.email or "").strip()
-                state.current_to = to_addr
+                if fast_mailing:
+                    batch_targets = targets[:MAIL_FAST_BATCH_SIZE]
+                    first_addr = (batch_targets[0].email or "").strip()
+                    extra = len(batch_targets) - 1
+                    state.current_to = (
+                        f"{first_addr} (+{extra})" if extra > 0 else first_addr
+                    )
+                else:
+                    batch_targets = [targets[0]]
+                    state.current_to = (batch_targets[0].email or "").strip()
+
                 state.last_status = "FAST" if fast_mailing else "SENDING"
                 set_sending_state(tg_user_id, state=state)
 
-                try:
-                    subject, body = await _build_message_for_target(session, tg_user_id, tgt)
-                    logger.info(
-                        "[mailing rotate] from=%s to=%s subject=%r",
-                        acc.email,
-                        to_addr,
-                        (subject or "")[:60],
+                batch_items: list[tuple[str, str, str]] = []
+                for tgt in batch_targets:
+                    subject, body = await _build_message_for_target(
+                        session, tg_user_id, tgt
                     )
-                    async with smtp_sem:
-                        ok, err, _msgid = await asyncio.wait_for(
-                            send_mailing_one(
-                                session,
-                                db_user_id,
-                                acc,
-                                to_addr,
-                                subject,
-                                body,
-                                sender_name=sender_name,
-                                fast_mailing=fast_mailing,
-                                sticky_proxy_id=sticky_proxy_id_loop,
-                            ),
-                            timeout=send_one_timeout,
+                    batch_items.append(
+                        ((tgt.email or "").strip(), subject, body)
+                    )
+
+                try:
+                    if fast_mailing:
+                        logger.info(
+                            "[mailing fast] from=%s batch=%s first=%s",
+                            acc.email,
+                            len(batch_items),
+                            first_addr,
                         )
+                        batch_timeout = send_one_timeout * max(1, len(batch_items))
+                        async with smtp_sem:
+                            raw_results = await asyncio.wait_for(
+                                send_mailing_batch(
+                                    session,
+                                    db_user_id,
+                                    acc,
+                                    batch_items,
+                                    sender_name=sender_name,
+                                ),
+                                timeout=batch_timeout,
+                            )
+                        results = [
+                            (bool(ok), normalize_send_error(err))
+                            for ok, err in raw_results
+                        ]
+                    else:
+                        to_addr, subject, body = batch_items[0]
+                        logger.info(
+                            "[mailing rotate] from=%s to=%s subject=%r",
+                            acc.email,
+                            to_addr,
+                            (subject or "")[:60],
+                        )
+                        async with smtp_sem:
+                            ok, err, _msgid = await asyncio.wait_for(
+                                send_mailing_one(
+                                    session,
+                                    db_user_id,
+                                    acc,
+                                    to_addr,
+                                    subject,
+                                    body,
+                                    sender_name=sender_name,
+                                    fast_mailing=False,
+                                ),
+                                timeout=send_one_timeout,
+                            )
+                        results = [(bool(ok), normalize_send_error(err))]
                 except asyncio.TimeoutError:
-                    ok, err = False, normalize_send_error(
+                    tmo_err = normalize_send_error(
                         f"SMTP_TIMEOUT|timeout|SMTP send exceeded {send_one_timeout}s"
                     )
+                    results = [(False, tmo_err) for _ in batch_targets]
                 except Exception as e:
-                    ok, err = False, normalize_send_error(str(e))
+                    fail_err = normalize_send_error(str(e))
+                    results = [(False, fail_err) for _ in batch_targets]
 
                 state.current_to = ""
-                if ok:
-                    state.sent_count += 1
-                    state.last_status = _status_after_send()
-                    state.fast_proxy_fail_streak = 0
-                    account_send_counts[int(acc.id)] = account_send_counts.get(int(acc.id), 0) + 1
-                    await _purge_target(session, db_user_id, tgt.id)
-                else:
-                    state.last_status = _status_after_send()
-                    if fast_mailing and should_retry_send_with_other_proxy(err):
-                        state.fast_proxy_fail_streak = int(
-                            getattr(state, "fast_proxy_fail_streak", 0)
-                        ) + 1
-                        if state.fast_proxy_fail_streak >= MAIL_FAST_PROXY_FAIL_STOP:
-                            state.is_running = False
-                            state.last_error = normalize_send_error(
-                                f"PROXY_ERROR|fast_sticky_dead|"
-                                f"SOCKS5 id={sticky_proxy_id_loop} не держит Gmail SMTP "
-                                f"({MAIL_FAST_PROXY_FAIL_STOP} сбоев подряд). "
-                                f"Смените прокси или выключите фаст."
+                batch_ok = 0
+                for tgt, (ok, err) in zip(batch_targets, results):
+                    if ok:
+                        state.sent_count += 1
+                        batch_ok += 1
+                        account_send_counts[int(acc.id)] = (
+                            account_send_counts.get(int(acc.id), 0) + 1
+                        )
+                        await _purge_target(session, db_user_id, tgt.id)
+                    else:
+                        blocked = await _handle_send_failure(
+                            session=session,
+                            db_user_id=db_user_id,
+                            state=state,
+                            tgt=tgt,
+                            err=err or "UNKNOWN",
+                            acc=acc,
+                            bot=bot,
+                            chat_id=chat_id,
+                        )
+                        if blocked:
+                            rotation_accounts = _remove_account_from_rotation(
+                                rotation_accounts, int(acc.id)
                             )
-                            set_sending_state(tg_user_id, state=state)
-                            try:
-                                await bot.send_message(
-                                    chat_id,
-                                    "⏹ <b>Фаст рассыл остановлен</b>\n\n"
-                                    f"Прокси id=<code>{sticky_proxy_id_loop}</code> не проходит Gmail SMTP "
-                                    f"({MAIL_FAST_PROXY_FAIL_STOP} ошибок подряд).\n"
-                                    "Проверьте SOCKS5 или отключите «Фаст рассыл».",
-                                    parse_mode="HTML",
-                                )
-                            except Exception:
-                                pass
+                            state.accounts_active = len(rotation_accounts)
+                            logger.info(
+                                "removed smtp_blocked account from rotation: %s",
+                                acc.email,
+                            )
                             break
-                    blocked = await _handle_send_failure(
-                        session=session,
-                        db_user_id=db_user_id,
-                        state=state,
-                        tgt=tgt,
-                        err=err or "UNKNOWN",
-                        acc=acc,
-                        bot=bot,
-                        chat_id=chat_id,
-                    )
-                    if blocked:
-                        rotation_accounts = _remove_account_from_rotation(
-                            rotation_accounts, int(acc.id)
-                        )
-                        state.accounts_active = len(rotation_accounts)
-                        logger.info(
-                            "removed smtp_blocked account from rotation: %s",
-                            acc.email,
-                        )
 
+                state.last_status = _status_after_send()
+                if batch_ok:
+                    state.fast_proxy_fail_streak = 0
                 set_sending_state(tg_user_id, state=state)
 
             if not state.is_running:
                 break
-            await asyncio.sleep(random.uniform(min_delay, max_delay))
+            if not fast_mailing_loop:
+                await asyncio.sleep(random.uniform(min_delay, max_delay))
 
     except TelegramNetworkError:
         state.is_running = False

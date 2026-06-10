@@ -15,6 +15,7 @@ from services.smtp_delivery_verify import verify_message_in_sent
 from services.smtp_proxy_send import (
     MAIL_SMTP_MAX_PROXIES,
     MAIL_SMTP_TIMEOUT_SEC,
+    send_batch_via_account_with_proxy,
     send_email_via_account_with_proxy,
 )
 
@@ -32,19 +33,21 @@ MAIL_SEND_RETRIES = max(1, min(3, int(os.getenv("MAIL_SEND_RETRIES", "2"))))
 MAIL_FAST_SEND_RETRIES = max(
     MAIL_SEND_RETRIES, min(5, int(os.getenv("MAIL_FAST_SEND_RETRIES", "3")))
 )
+MAIL_FAST_BATCH_SIZE = max(1, min(25, int(os.getenv("MAIL_FAST_BATCH_SIZE", "10"))))
 MAIL_SEND_RETRY_PAUSE_SEC = max(
     1.0, min(8.0, float(os.getenv("MAIL_SEND_RETRY_PAUSE_SEC", "2")))
 )
-MAIL_FAST_PROXY_FAIL_STOP = max(
-    3, min(15, int(os.getenv("MAIL_FAST_PROXY_FAIL_STOP", "5")))
+MAIL_FAST_SEND_RETRY_PAUSE_SEC = max(
+    0.0, min(2.0, float(os.getenv("MAIL_FAST_SEND_RETRY_PAUSE_SEC", "0.15")))
 )
 
 
 def mailing_send_overall_timeout_sec(*, fast_mailing: bool = False) -> int:
     """Лимит на одно письмо: прокси × таймаут × попытки (без 10-минутных зависаний)."""
     retries = MAIL_FAST_SEND_RETRIES if fast_mailing else MAIL_SEND_RETRIES
-    proxy_tries = 1 if fast_mailing else MAIL_SMTP_MAX_PROXIES
-    per = proxy_tries * MAIL_SMTP_TIMEOUT_SEC + 20
+    proxy_tries = MAIL_SMTP_MAX_PROXIES
+    batch_mul = MAIL_FAST_BATCH_SIZE if fast_mailing else 1
+    per = proxy_tries * MAIL_SMTP_TIMEOUT_SEC * batch_mul + 30
     raw = per * retries + retries * MAIL_SEND_RETRY_PAUSE_SEC + 15
     return max(60, min(240, int(os.getenv("SEND_ONE_TIMEOUT", str(int(raw))))))
 
@@ -63,11 +66,13 @@ async def send_mailing_one(
     sender_name: Optional[str] = None,
     *,
     fast_mailing: bool = False,
-    sticky_proxy_id: int | None = None,
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     last_err: Optional[str] = None
     last_msgid: Optional[str] = None
     max_retries = MAIL_FAST_SEND_RETRIES if fast_mailing else MAIL_SEND_RETRIES
+    retry_pause = (
+        MAIL_FAST_SEND_RETRY_PAUSE_SEC if fast_mailing else MAIL_SEND_RETRY_PAUSE_SEC
+    )
 
     for attempt in range(1, max_retries + 1):
         ok, err, msgid = await send_email_via_account_with_proxy(
@@ -79,7 +84,7 @@ async def send_mailing_one(
             body,
             sender_name=sender_name,
             fast=False,
-            sticky_proxy_id=sticky_proxy_id if fast_mailing else None,
+            mailing_fast=fast_mailing,
         )
         err = normalize_send_error(err)
         last_err = err
@@ -87,7 +92,8 @@ async def send_mailing_one(
 
         if not ok:
             if _retry_after_failure(err) and attempt < max_retries:
-                await asyncio.sleep(MAIL_SEND_RETRY_PAUSE_SEC)
+                if retry_pause > 0:
+                    await asyncio.sleep(retry_pause)
                 continue
             return False, err, msgid
 
@@ -108,13 +114,37 @@ async def send_mailing_one(
                     f"SMTP_ACCEPTED_NOT_IN_SENT|verify|{verify_msg or 'not in Sent'}"
                 )
                 if attempt < max_retries:
-                    await asyncio.sleep(MAIL_SEND_RETRY_PAUSE_SEC)
+                    if retry_pause > 0:
+                        await asyncio.sleep(retry_pause)
                     continue
                 return False, last_err, msgid
 
         return True, None, msgid
 
     return False, last_err or "UNKNOWN", last_msgid
+
+
+async def send_mailing_batch(
+    session: AsyncSession,
+    user_id: int,
+    account: EmailAccount,
+    items: list[tuple[str, str, str]],
+    sender_name: Optional[str] = None,
+) -> list[tuple[bool, Optional[str]]]:
+    """
+    Фаст-рассыл: несколько писем за одно SMTP-подключение.
+    Прокси не помечаются 🔴 при временных сбоях (mailing_fast).
+    """
+    if not items:
+        return []
+    return await send_batch_via_account_with_proxy(
+        session,
+        int(user_id),
+        account,
+        items,
+        sender_name=sender_name,
+        mailing_fast=True,
+    )
 
 
 # совместимость
