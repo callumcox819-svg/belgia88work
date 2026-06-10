@@ -11,7 +11,7 @@ from email.mime.multipart import MIMEMultipart
 from email.utils import formataddr, formatdate, make_msgid
 from typing import Optional, Tuple, List
 
-from models import EmailAccount
+from models import EmailAccount, Proxy
 from database import Session
 from sqlalchemy import select as sa_select, func
 
@@ -569,6 +569,83 @@ def _send_plain_sync(
         return False, f"{type(e).__name__}: {code or ''} {text}".strip() or str(e), None
 
 
+def _send_plain_sync_via_isolated_proxy(
+    proxy: Proxy,
+    account: EmailAccount,
+    to_email: str,
+    subject: str,
+    body: str,
+    sender_name: Optional[str] = None,
+    is_html: Optional[bool] = None,
+    smtp_timeout_sec: float | None = None,
+) -> Tuple[bool, Optional[str], Optional[str]]:
+    """SMTP через свой SOCKS5-сокет (без глобального PySocks) — можно параллелить ящики."""
+    from services.smtp_account_check import _connect_smtp_via_socks
+
+    if "{{" in (body or ""):
+        body = apply_placeholders(body)
+    host, port = _smtp_host_port(getattr(account, "provider", "") or "", account.email)
+    msg = _build_message(
+        from_email=account.email,
+        to_email=to_email,
+        subject=subject,
+        body=body,
+        sender_name=sender_name,
+        is_html=is_html,
+    )
+    tmo = float(smtp_timeout_sec if smtp_timeout_sec is not None else SMTP_TIMEOUT_SEC)
+    s: smtplib.SMTP | None = None
+    try:
+        s = _connect_smtp_via_socks(proxy, host, port, timeout=tmo)
+        s.ehlo()
+        s.starttls()
+        s.ehlo()
+        s.login(account.email, (account.password or "").strip())
+
+        refused = s.send_message(msg, from_addr=account.email, to_addrs=[to_email])
+        if refused:
+            logger.warning("[SMTP isolated] Recipient refused: %s", refused)
+            return False, "RECIPIENT_REFUSED", None
+        if not _confirm_smtp_session(s):
+            return False, _marker("SMTP_SESSION_LOST", None, "connection lost after DATA"), None
+
+        msgid = msg.get("Message-ID")
+        logger.info(
+            "[SMTP isolated] %s -> %s via proxy_id=%s subject=%r",
+            account.email,
+            to_email,
+            getattr(proxy, "id", "?"),
+            (subject or "")[:60],
+        )
+        return True, None, msgid
+    except Exception as e:
+        code, text = _extract_code_text_from_exception(e)
+        if _is_proxy_error(e, text):
+            return False, _marker("PROXY_ERROR", code or "socks", text or str(e)), None
+        if _is_smtp_timeout_text(text or str(e)):
+            return False, _marker("SMTP_TIMEOUT", code or "timeout", text or str(e)), None
+        if _is_invalid_creds(code, text):
+            return False, _marker("ACCOUNT_INVALID_CREDENTIALS", code, text), None
+        if _is_web_login_required(text):
+            return False, _marker("ACCOUNT_WEB_LOGIN_REQUIRED", code, text), None
+        if _is_rate_limit(code, text):
+            return False, _marker("ACCOUNT_RATE_LIMIT", code, text), None
+        if _is_blocked(code, text):
+            return False, _marker("ACCOUNT_BLOCKED", code, text), None
+        if _is_hard_bounce(code, text):
+            return False, _marker("RECIPIENT_DEAD", code, text), None
+        return False, f"{type(e).__name__}: {code or ''} {text}".strip() or str(e), None
+    finally:
+        if s is not None:
+            try:
+                s.quit()
+            except Exception:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+
+
 async def send_email_via_account(
     account: EmailAccount,
     to_email: str,
@@ -581,6 +658,30 @@ async def send_email_via_account(
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     return await asyncio.to_thread(
         _send_plain_sync,
+        account,
+        to_email,
+        subject,
+        body,
+        sender_name,
+        is_html,
+        smtp_timeout_sec,
+    )
+
+
+async def send_email_via_isolated_proxy(
+    proxy: Proxy,
+    account: EmailAccount,
+    to_email: str,
+    subject: str,
+    body: str,
+    sender_name: Optional[str] = None,
+    is_html: Optional[bool] = None,
+    *,
+    smtp_timeout_sec: float | None = None,
+) -> Tuple[bool, Optional[str], Optional[str]]:
+    return await asyncio.to_thread(
+        _send_plain_sync_via_isolated_proxy,
+        proxy,
         account,
         to_email,
         subject,

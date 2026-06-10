@@ -20,11 +20,11 @@ from database import db_session
 from models import EmailAccount, OfferEmail, Offer, User, Proxy
 
 from services.mailing_send import (
-    MAIL_FAST_BATCH_SIZE,
+    MAIL_FAST_PARALLEL_ACCOUNTS,
     MAIL_VERIFY_SENT,
     mailing_send_overall_timeout_sec,
-    send_mailing_batch,
     send_mailing_one,
+    send_mailing_one_parallel,
 )
 from services.users import get_or_create_user
 from services.user_settings import get_user_setting
@@ -385,14 +385,19 @@ async def _start_sending_inner(
     from services.mailing_send import MAIL_SEND_RETRIES, MAIL_VERIFY_SENT
     from services.smtp_proxy_send import MAIL_SMTP_MAX_PROXIES, MAIL_SMTP_TIMEOUT_SEC
 
+    fast_acc_label = (
+        f"<b>{MAIL_FAST_PARALLEL_ACCOUNTS}</b>"
+        if MAIL_FAST_PARALLEL_ACCOUNTS > 0
+        else "<b>все active</b>"
+    )
     proxy_mode = (
-        f"⚡ <b>Фаст рассыл</b> — без пауз, пачки по <b>{MAIL_FAST_BATCH_SIZE}</b> писем "
-        f"(все 🟢/🟡 SOCKS5, до <b>{MAIL_SMTP_MAX_PROXIES}</b> попыток, прокси не 🔴 на сбой)"
+        f"⚡ <b>Фаст рассыл</b> — <b>параллельно</b> {fast_acc_label} ящиков за волну, "
+        f"без пауз (🟢/🟡 SOCKS5, прокси не 🔴 на временный сбой)"
         if fast_mailing
         else f"🌐 все живые SOCKS5 (до <b>{MAIL_SMTP_MAX_PROXIES}</b> попыток на письмо)"
     )
     scheme_line = (
-        f"Схема: <b>1 ящик → до {MAIL_FAST_BATCH_SIZE} адресов</b> за одно SMTP · <b>без пауз</b>\n"
+        f"Схема: <b>{fast_acc_label} ящиков × 1 адрес</b> одновременно · <b>без пауз</b>\n"
         if fast_mailing
         else "Схема: <b>1 ящик → 1 умный пресет → 1 адрес</b> → пауза MIN–MAX\n"
     )
@@ -628,15 +633,17 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                 max_delay = float(timing.get("max_delay", 4.0))
                 fast_mailing = fast_mailing_loop
 
-                # Ящики по кругу + случайный умный пресет на каждое письмо.
-                acc: EmailAccount | None = None
                 if mail_max_per_account > 0:
-                    eligible = [
+                    eligible_accounts = [
                         a
                         for a in rotation_accounts
                         if account_send_counts.get(int(a.id), 0) < mail_max_per_account
                     ]
-                    if not eligible:
+                else:
+                    eligible_accounts = list(rotation_accounts)
+
+                if fast_mailing:
+                    if not eligible_accounts:
                         state.is_running = False
                         state.last_error = (
                             "ACCOUNT_RATE_LIMIT|cap|All accounts hit MAIL_MAX_PER_ACCOUNT"
@@ -645,131 +652,223 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                         try:
                             await bot.send_message(
                                 chat_id,
-                                f"⏹ Лимит писем с ящика ({mail_max_per_account}) за этот запуск. "
-                                "Запустите рассылку снова позже.",
+                                f"⏹ Лимит писем с ящика ({mail_max_per_account}) за этот запуск.",
                             )
                         except Exception:
                             pass
                         break
-                    acc = eligible[acc_idx % len(eligible)]
-                else:
-                    acc = rotation_accounts[acc_idx % len(rotation_accounts)]
+
+                    wave_cap = (
+                        MAIL_FAST_PARALLEL_ACCOUNTS
+                        if MAIL_FAST_PARALLEL_ACCOUNTS > 0
+                        else len(eligible_accounts)
+                    )
+                    wave_n = min(len(targets), len(eligible_accounts), wave_cap)
+                    wave_accounts = [
+                        eligible_accounts[(acc_idx + i) % len(eligible_accounts)]
+                        for i in range(wave_n)
+                    ]
+                    wave_targets = targets[:wave_n]
+                    acc_idx = (acc_idx + wave_n) % max(1, len(eligible_accounts))
+
+                    prepared: list[
+                        tuple[EmailAccount, OfferEmail, str, str]
+                    ] = []
+                    for acc_w, tgt_w in zip(wave_accounts, wave_targets):
+                        subj_w, body_w = await _build_message_for_target(
+                            session, tg_user_id, tgt_w
+                        )
+                        prepared.append((acc_w, tgt_w, subj_w, body_w))
+
+                    preview = ", ".join(
+                        (a.email or "").split("@")[0] for a in wave_accounts[:4]
+                    )
+                    if wave_n > 4:
+                        preview += f" +{wave_n - 4}"
+                    state.current_to = f"⚡ {wave_n} ящиков: {preview}"
+                    state.last_status = "FAST"
+                    set_sending_state(tg_user_id, state=state)
+
+                    logger.info(
+                        "[mailing fast wave] accounts=%s targets=%s",
+                        wave_n,
+                        [t.email for t in wave_targets[:5]],
+                    )
+
+                    async def _parallel_send(
+                        acc_w: EmailAccount,
+                        tgt_w: OfferEmail,
+                        subj_w: str,
+                        body_w: str,
+                    ) -> Tuple[bool, str, EmailAccount, OfferEmail]:
+                        to_w = (tgt_w.email or "").strip()
+                        try:
+                            async with db_session() as ws:
+                                ok_w, err_w, _ = await asyncio.wait_for(
+                                    send_mailing_one_parallel(
+                                        ws,
+                                        db_user_id,
+                                        acc_w,
+                                        to_w,
+                                        subj_w,
+                                        body_w,
+                                        sender_name=sender_name,
+                                    ),
+                                    timeout=send_one_timeout,
+                                )
+                            return (
+                                bool(ok_w),
+                                normalize_send_error(err_w),
+                                acc_w,
+                                tgt_w,
+                            )
+                        except asyncio.TimeoutError:
+                            return (
+                                False,
+                                normalize_send_error(
+                                    f"SMTP_TIMEOUT|timeout|exceeded {send_one_timeout}s"
+                                ),
+                                acc_w,
+                                tgt_w,
+                            )
+                        except Exception as ex:
+                            return (
+                                False,
+                                normalize_send_error(str(ex)),
+                                acc_w,
+                                tgt_w,
+                            )
+
+                    wave_raw = await asyncio.gather(
+                        *[
+                            _parallel_send(acc_w, tgt_w, subj_w, body_w)
+                            for acc_w, tgt_w, subj_w, body_w in prepared
+                        ]
+                    )
+
+                    state.current_to = ""
+                    wave_ok = 0
+                    for ok_w, err_w, acc_w, tgt_w in wave_raw:
+                        if ok_w:
+                            state.sent_count += 1
+                            wave_ok += 1
+                            account_send_counts[int(acc_w.id)] = (
+                                account_send_counts.get(int(acc_w.id), 0) + 1
+                            )
+                            await _purge_target(session, db_user_id, tgt_w.id)
+                        else:
+                            blocked = await _handle_send_failure(
+                                session=session,
+                                db_user_id=db_user_id,
+                                state=state,
+                                tgt=tgt_w,
+                                err=err_w or "UNKNOWN",
+                                acc=acc_w,
+                                bot=bot,
+                                chat_id=chat_id,
+                            )
+                            if blocked:
+                                rotation_accounts = _remove_account_from_rotation(
+                                    rotation_accounts, int(acc_w.id)
+                                )
+                                state.accounts_active = len(rotation_accounts)
+
+                    state.last_status = _status_after_send()
+                    if wave_ok:
+                        state.fast_proxy_fail_streak = 0
+                    set_sending_state(tg_user_id, state=state)
+
+                    if not state.is_running:
+                        break
+                    continue
+
+                # Обычный режим: 1 ящик → 1 адрес → пауза MIN–MAX.
+                acc: EmailAccount | None = None
+                if not eligible_accounts:
+                    state.is_running = False
+                    state.last_error = (
+                        "ACCOUNT_RATE_LIMIT|cap|All accounts hit MAIL_MAX_PER_ACCOUNT"
+                    )
+                    set_sending_state(tg_user_id, state=state)
+                    try:
+                        await bot.send_message(
+                            chat_id,
+                            f"⏹ Лимит писем с ящика ({mail_max_per_account}) за этот запуск. "
+                            "Запустите рассылку снова позже.",
+                        )
+                    except Exception:
+                        pass
+                    break
+                acc = eligible_accounts[acc_idx % len(eligible_accounts)]
                 acc_idx += 1
 
-                if fast_mailing:
-                    batch_targets = targets[:MAIL_FAST_BATCH_SIZE]
-                    first_addr = (batch_targets[0].email or "").strip()
-                    extra = len(batch_targets) - 1
-                    state.current_to = (
-                        f"{first_addr} (+{extra})" if extra > 0 else first_addr
-                    )
-                else:
-                    batch_targets = [targets[0]]
-                    state.current_to = (batch_targets[0].email or "").strip()
-
-                state.last_status = "FAST" if fast_mailing else "SENDING"
+                tgt = targets[0]
+                to_addr = (tgt.email or "").strip()
+                state.current_to = to_addr
+                state.last_status = "SENDING"
                 set_sending_state(tg_user_id, state=state)
 
-                batch_items: list[tuple[str, str, str]] = []
-                for tgt in batch_targets:
-                    subject, body = await _build_message_for_target(
-                        session, tg_user_id, tgt
-                    )
-                    batch_items.append(
-                        ((tgt.email or "").strip(), subject, body)
-                    )
-
+                subject, body = await _build_message_for_target(
+                    session, tg_user_id, tgt
+                )
+                logger.info(
+                    "[mailing rotate] from=%s to=%s subject=%r",
+                    acc.email,
+                    to_addr,
+                    (subject or "")[:60],
+                )
                 try:
-                    if fast_mailing:
-                        logger.info(
-                            "[mailing fast] from=%s batch=%s first=%s",
-                            acc.email,
-                            len(batch_items),
-                            first_addr,
+                    async with smtp_sem:
+                        ok, err, _msgid = await asyncio.wait_for(
+                            send_mailing_one(
+                                session,
+                                db_user_id,
+                                acc,
+                                to_addr,
+                                subject,
+                                body,
+                                sender_name=sender_name,
+                                fast_mailing=False,
+                            ),
+                            timeout=send_one_timeout,
                         )
-                        batch_timeout = send_one_timeout * max(1, len(batch_items))
-                        async with smtp_sem:
-                            raw_results = await asyncio.wait_for(
-                                send_mailing_batch(
-                                    session,
-                                    db_user_id,
-                                    acc,
-                                    batch_items,
-                                    sender_name=sender_name,
-                                ),
-                                timeout=batch_timeout,
-                            )
-                        results = [
-                            (bool(ok), normalize_send_error(err))
-                            for ok, err in raw_results
-                        ]
-                    else:
-                        to_addr, subject, body = batch_items[0]
-                        logger.info(
-                            "[mailing rotate] from=%s to=%s subject=%r",
-                            acc.email,
-                            to_addr,
-                            (subject or "")[:60],
-                        )
-                        async with smtp_sem:
-                            ok, err, _msgid = await asyncio.wait_for(
-                                send_mailing_one(
-                                    session,
-                                    db_user_id,
-                                    acc,
-                                    to_addr,
-                                    subject,
-                                    body,
-                                    sender_name=sender_name,
-                                    fast_mailing=False,
-                                ),
-                                timeout=send_one_timeout,
-                            )
-                        results = [(bool(ok), normalize_send_error(err))]
                 except asyncio.TimeoutError:
-                    tmo_err = normalize_send_error(
+                    ok, err = False, normalize_send_error(
                         f"SMTP_TIMEOUT|timeout|SMTP send exceeded {send_one_timeout}s"
                     )
-                    results = [(False, tmo_err) for _ in batch_targets]
                 except Exception as e:
-                    fail_err = normalize_send_error(str(e))
-                    results = [(False, fail_err) for _ in batch_targets]
+                    ok, err = False, normalize_send_error(str(e))
 
                 state.current_to = ""
-                batch_ok = 0
-                for tgt, (ok, err) in zip(batch_targets, results):
-                    if ok:
-                        state.sent_count += 1
-                        batch_ok += 1
-                        account_send_counts[int(acc.id)] = (
-                            account_send_counts.get(int(acc.id), 0) + 1
+                if ok:
+                    state.sent_count += 1
+                    state.last_status = _status_after_send()
+                    account_send_counts[int(acc.id)] = account_send_counts.get(
+                        int(acc.id), 0
+                    ) + 1
+                    await _purge_target(session, db_user_id, tgt.id)
+                else:
+                    state.last_status = _status_after_send()
+                    blocked = await _handle_send_failure(
+                        session=session,
+                        db_user_id=db_user_id,
+                        state=state,
+                        tgt=tgt,
+                        err=err or "UNKNOWN",
+                        acc=acc,
+                        bot=bot,
+                        chat_id=chat_id,
+                    )
+                    if blocked:
+                        rotation_accounts = _remove_account_from_rotation(
+                            rotation_accounts, int(acc.id)
                         )
-                        await _purge_target(session, db_user_id, tgt.id)
-                    else:
-                        blocked = await _handle_send_failure(
-                            session=session,
-                            db_user_id=db_user_id,
-                            state=state,
-                            tgt=tgt,
-                            err=err or "UNKNOWN",
-                            acc=acc,
-                            bot=bot,
-                            chat_id=chat_id,
+                        state.accounts_active = len(rotation_accounts)
+                        logger.info(
+                            "removed smtp_blocked account from rotation: %s",
+                            acc.email,
                         )
-                        if blocked:
-                            rotation_accounts = _remove_account_from_rotation(
-                                rotation_accounts, int(acc.id)
-                            )
-                            state.accounts_active = len(rotation_accounts)
-                            logger.info(
-                                "removed smtp_blocked account from rotation: %s",
-                                acc.email,
-                            )
-                            break
 
-                state.last_status = _status_after_send()
-                if batch_ok:
-                    state.fast_proxy_fail_streak = 0
                 set_sending_state(tg_user_id, state=state)
 
             if not state.is_running:

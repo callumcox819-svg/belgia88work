@@ -18,6 +18,7 @@ from services.sender import (
     normalize_send_error,
     send_batch_via_account,
     send_email_via_account,
+    send_email_via_isolated_proxy,
     should_retry_send_with_other_proxy,
 )
 from services.proxy_manager import ProxyManager
@@ -258,6 +259,99 @@ async def send_email_via_account_with_proxy(
         f"Ни один из {tried} SOCKS5 не достучался до Gmail SMTP "
         f"(последняя: {last_err or 'timeout'}). "
         f"«Прокси» → проверить — нужно SMTP+STARTTLS OK."
+    )
+    if is_smtp_timeout_error(last_err):
+        return False, f"SMTP_TIMEOUT|all_proxies|{hint}", last_msgid
+    return False, last_err or NO_ACTIVE_PROXY, last_msgid
+
+
+async def send_email_via_account_with_proxy_isolated(
+    session: AsyncSession,
+    user_id: int,
+    account: EmailAccount,
+    to_email: str,
+    subject: str,
+    body: str,
+    sender_name: Optional[str] = None,
+    is_html: Optional[bool] = None,
+    *,
+    mailing_fast: bool = True,
+) -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    Параллельный фаст: каждый ящик — свой SOCKS5-сокет, без глобального _PROXY_LOCK.
+    """
+    proxies = await _list_active_socks5_proxies(session, user_id)
+    if not proxies:
+        return False, NO_ACTIVE_PROXY, None
+
+    order = _order_proxies_for_send(
+        int(user_id), proxies, fast=False, account_id=int(account.id)
+    )
+    smtp_tmo = MAIL_SMTP_TIMEOUT_SEC
+    last_err: str | None = None
+    last_msgid: str | None = None
+    tried = 0
+
+    for proxy in order:
+        pid = int(proxy.id)
+        tried += 1
+        logger.info(
+            "[SMTP isolated] try proxy_id=%s %s:%s account=%s -> %s (%s/%s)",
+            pid,
+            proxy.host,
+            proxy.port,
+            account.email,
+            to_email,
+            tried,
+            len(order),
+        )
+        ok, err, msgid = await send_email_via_isolated_proxy(
+            proxy,
+            account,
+            to_email,
+            subject,
+            body,
+            sender_name=sender_name,
+            is_html=is_html,
+            smtp_timeout_sec=smtp_tmo,
+        )
+        err = normalize_send_error(err)
+        if ok:
+            _LAST_OK_PROXY_ID[int(user_id)] = pid
+            _LAST_OK_PROXY_BY_ACCOUNT[(int(user_id), int(account.id))] = pid
+            try:
+                await ProxyManager.note_proxy_success(session, pid)
+            except Exception:
+                pass
+            return True, err, msgid
+
+        last_err = err
+        last_msgid = msgid
+        logger.warning(
+            "[SMTP isolated] fail proxy_id=%s account=%s err=%s",
+            pid,
+            account.email,
+            (err or "")[:200],
+        )
+
+        dead = _proxy_deactivate_on_fail(mailing_fast=mailing_fast, err=err)
+        try:
+            await ProxyManager.note_proxy_failure(
+                session,
+                pid,
+                (err or "")[:500],
+                deactivate=dead,
+                from_mailing=True,
+            )
+        except Exception:
+            pass
+
+        if not should_retry_send_with_other_proxy(err):
+            return False, err, last_msgid
+
+    hint = (
+        f"Ни один из {tried} SOCKS5 не достучался до Gmail SMTP "
+        f"(последняя: {last_err or 'timeout'})."
     )
     if is_smtp_timeout_error(last_err):
         return False, f"SMTP_TIMEOUT|all_proxies|{hint}", last_msgid

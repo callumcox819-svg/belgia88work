@@ -15,8 +15,8 @@ from services.smtp_delivery_verify import verify_message_in_sent
 from services.smtp_proxy_send import (
     MAIL_SMTP_MAX_PROXIES,
     MAIL_SMTP_TIMEOUT_SEC,
-    send_batch_via_account_with_proxy,
     send_email_via_account_with_proxy,
+    send_email_via_account_with_proxy_isolated,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,10 @@ MAIL_SEND_RETRIES = max(1, min(3, int(os.getenv("MAIL_SEND_RETRIES", "2"))))
 MAIL_FAST_SEND_RETRIES = max(
     MAIL_SEND_RETRIES, min(5, int(os.getenv("MAIL_FAST_SEND_RETRIES", "3")))
 )
-MAIL_FAST_BATCH_SIZE = max(1, min(25, int(os.getenv("MAIL_FAST_BATCH_SIZE", "10"))))
+# 0 = все активные ящики за одну волну (параллельно)
+MAIL_FAST_PARALLEL_ACCOUNTS = max(
+    0, min(50, int(os.getenv("MAIL_FAST_PARALLEL_ACCOUNTS", "0")))
+)
 MAIL_SEND_RETRY_PAUSE_SEC = max(
     1.0, min(8.0, float(os.getenv("MAIL_SEND_RETRY_PAUSE_SEC", "2")))
 )
@@ -46,8 +49,7 @@ def mailing_send_overall_timeout_sec(*, fast_mailing: bool = False) -> int:
     """Лимит на одно письмо: прокси × таймаут × попытки (без 10-минутных зависаний)."""
     retries = MAIL_FAST_SEND_RETRIES if fast_mailing else MAIL_SEND_RETRIES
     proxy_tries = MAIL_SMTP_MAX_PROXIES
-    batch_mul = MAIL_FAST_BATCH_SIZE if fast_mailing else 1
-    per = proxy_tries * MAIL_SMTP_TIMEOUT_SEC * batch_mul + 30
+    per = proxy_tries * MAIL_SMTP_TIMEOUT_SEC + 30
     raw = per * retries + retries * MAIL_SEND_RETRY_PAUSE_SEC + 15
     return max(60, min(240, int(os.getenv("SEND_ONE_TIMEOUT", str(int(raw))))))
 
@@ -124,24 +126,23 @@ async def send_mailing_one(
     return False, last_err or "UNKNOWN", last_msgid
 
 
-async def send_mailing_batch(
+async def send_mailing_one_parallel(
     session: AsyncSession,
     user_id: int,
     account: EmailAccount,
-    items: list[tuple[str, str, str]],
+    to_email: str,
+    subject: str,
+    body: str,
     sender_name: Optional[str] = None,
-) -> list[tuple[bool, Optional[str]]]:
-    """
-    Фаст-рассыл: несколько писем за одно SMTP-подключение.
-    Прокси не помечаются 🔴 при временных сбоях (mailing_fast).
-    """
-    if not items:
-        return []
-    return await send_batch_via_account_with_proxy(
+) -> Tuple[bool, Optional[str], Optional[str]]:
+    """Фаст-волна: изолированный SMTP (параллель с другими ящиками)."""
+    return await send_email_via_account_with_proxy_isolated(
         session,
         int(user_id),
         account,
-        items,
+        to_email,
+        subject,
+        body,
         sender_name=sender_name,
         mailing_fast=True,
     )
