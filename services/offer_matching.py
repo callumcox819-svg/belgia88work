@@ -50,6 +50,20 @@ def product_title_from_subject(subject: str) -> str:
     return subj
 
 
+def narkologia_link_title_from_mail(subject: str, offer: Offer | None = None) -> str:
+    """Имя для Narkologia API и карточки ссылки — всегда из темы письма, не из title в БД."""
+    subj_t = product_title_from_subject(subject)
+    if subj_t:
+        return subj_t
+    if offer:
+        from services.offer_storage import offer_effective_title
+
+        ot = (offer_effective_title(offer) or "").strip()
+        if ot:
+            return ot
+    return (subject or "").strip() or "OFFER"
+
+
 def subject_title_agrees(subject: str, offer: Offer) -> bool:
     """Poputka-style: Re: <товар> совпадает с названием лота (не только год/стоп-слова)."""
     from services.offer_storage import offer_effective_title
@@ -472,7 +486,6 @@ async def finalize_aqua_listing_context(
         find_offer_by_link,
         offer_effective_photo,
         offer_effective_price,
-        offer_effective_title,
     )
 
     url = (listing_url or "").strip()
@@ -487,27 +500,12 @@ async def finalize_aqua_listing_context(
     elif off_url and not subject_is_informative(subject):
         offer = off_url
 
-    subj_t = product_title_from_subject(subject)
-    title = ""
+    title = narkologia_link_title_from_mail(subject, offer)
     price = image = None
 
     if offer:
-        ot = (offer_effective_title(offer) or "").strip()
-        if subject_is_informative(subject):
-            sm = subject_match_score(subject, offer)
-            if sm < _CONV_AD_URL_MIN_SUBJECT_SCORE and subj_t:
-                title = subj_t
-            else:
-                title = ot or subj_t
-        else:
-            title = ot or subj_t
         price = offer_effective_price(offer) or None
         image = offer_effective_photo(offer) or None
-    else:
-        title = subj_t
-
-    if not (title or "").strip():
-        title = subj_t or (subject or "").strip() or "OFFER"
 
     return offer, url, title.strip(), price, image
 

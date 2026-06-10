@@ -1705,10 +1705,10 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
             subject=subj_mail,
         )
         offer_id = int(offer.id) if offer else None
-        offer_title = (offer_effective_title(offer) or "").strip() if offer else title
+        offer_title = title
 
         if not title:
-            await callback.message.answer("❌ Нет названия объявления (title).")
+            await callback.message.answer("❌ Нет названия в теме письма (Re: …).")
             await callback.answer()
             return
 
@@ -1888,10 +1888,10 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
             subject=subj_pre,
         )
         offer_id = int(offer.id) if offer else None
-        offer_title = (offer_effective_title(offer) or "").strip() if offer else title
+        offer_title = title
 
         if not title:
-            await callback.message.answer("❌ Нет названия объявления (title).")
+            await callback.message.answer("❌ Нет названия в теме письма (Re: …).")
             return await callback.answer()
 
         service = await get_user_aqua_service(session, user)
