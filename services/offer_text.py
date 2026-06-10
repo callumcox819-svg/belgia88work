@@ -28,12 +28,11 @@ def ensure_item_title_in_body(body: str, offer_title: str) -> str:
     return f"{b}\n\nIk heb het over uw advertentie: {t}."
 
 
-def trim_trailing_offer_title(body: str, offer_title: str) -> str:
-    """Убрать дубль названия в конце тела, если оно уже в теме (OFFER в конце пресета)."""
-    b = (body or "").rstrip()
-    t = (offer_title or "").strip()
-    if not b or not t or len(t) < 3:
-        return body
-    if b.endswith(t):
-        b = b[: -len(t)].rstrip()
-    return b
+def finalize_mailing_body(body: str, offer_title: str) -> str:
+    """
+    OFFER из пресета → название товара; если в тексте его нет — дописать.
+    (Раньше trim_trailing_offer_title срезал OFFER с конца — из-за этого в спам уходило
+    «uw artikel» без названия при теме = товар.)
+    """
+    out = apply_offer_to_text(body or "", offer_title or "")
+    return ensure_item_title_in_body(out, offer_title or "")

@@ -289,9 +289,9 @@ async def _build_test_message(
         ).first()
         item_title = (row[0] if row else "") or "OFFER"
 
-    from services.subject_offer import subject_for_offer
+    from services.subject_offer import mailing_subject_for_user
 
-    subject = subject_for_offer(item_title)
+    subject = await mailing_subject_for_user(session, user, item_title)
 
     price = (getattr(offer, "price", "") or "").strip() if offer else ""
     link = (getattr(offer, "link", "") or "").strip() if offer else ""
@@ -317,10 +317,9 @@ async def _build_test_message(
             base_text = f"{base_text} ({item_title})"
 
     body = apply_placeholders(base_text, link=link, ctx=ctx)
-    from services.offer_text import ensure_item_title_in_body, trim_trailing_offer_title
+    from services.offer_text import finalize_mailing_body
 
-    body = ensure_item_title_in_body(body, item_title)
-    body = trim_trailing_offer_title(body, item_title)
+    body = finalize_mailing_body(body, item_title)
     return subject, body, item_title
 
 

@@ -54,3 +54,16 @@ def render_subject_with_offer(subject_template: str, offer_title: str) -> str:
 def subject_for_offer(offer_title: str, *, template: str | None = None) -> str:
     tpl = (template or "").strip() or global_subject_template()
     return render_subject_with_offer(tpl, offer_title)
+
+
+async def mailing_subject_for_user(session, user, offer_title: str) -> str:
+    """
+    Тема /send и тест-маил:
+    - Railway GLOBAL_SUBJECT_TEMPLATE (по умолчанию OFFER) для всех;
+    - если пользователь задал свою в ⚙️ → Темы, она приоритетнее.
+    """
+    from services.user_settings import get_user_setting
+
+    user_tpl = (await get_user_setting(session, user, SUBJECT_TEMPLATE_SETTING) or "").strip()
+    tpl = user_tpl or global_subject_template()
+    return render_subject_with_offer(tpl, offer_title or "")
