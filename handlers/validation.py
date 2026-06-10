@@ -492,6 +492,10 @@ async def _run_validation_pipeline(message: Message, status_msg: Message, items:
             await session.execute(delete(Offer).where(Offer.user_id == user.id))
             await session.commit()
 
+        from services.mailing_reset import get_mailing_reset_skip_emails
+
+        skip_queue_emails = await get_mailing_reset_skip_emails(session, int(user.id))
+
         offers_saved, offers_with_email, saved_email_count, output = await save_all_offers_from_import(
             session,
             user_id=int(user.id),
@@ -499,6 +503,7 @@ async def _run_validation_pipeline(message: Message, status_msg: Message, items:
             validated_rows=validated or [],
             norm_email=_norm_email,
             max_emails_per_offer=MAX_EMAILS_PER_OFFER,
+            skip_queue_emails=skip_queue_emails,
         )
         await session.commit()
 
@@ -537,10 +542,13 @@ async def _run_validation_pipeline(message: Message, status_msg: Message, items:
         pass
 
     append_note = " · ➕ добавлено к активной рассылке" if append_to_active_mailing else ""
+    skip_note = ""
+    if skip_queue_emails:
+        skip_note = f" · 🔒 не в очередь (после /reset): {len(skip_queue_emails)}"
     await message.answer_document(
         FSInputFile(out_path),
         caption=(
             f"📎 Результат · в БД {offers_saved}/{total_offers} · email {saved_email_count}"
-            f"{append_note}"
+            f"{append_note}{skip_note}"
         ),
     )

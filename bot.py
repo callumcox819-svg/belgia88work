@@ -121,6 +121,9 @@ def _bind_priority_dispatcher_handlers(dp: Dispatcher) -> None:
         cmd_stopsend,
         F.text.in_({"⏹ Остановить рассылку", "/stop", "/stopsend"}),
     )
+    from handlers.reset import cmd_reset
+
+    dp.message.register(cmd_reset, Command("reset"))
     dp.message.register(cmd_statussend, Command("stat", "status", "statussend"))
     dp.message.register(cmd_statussend, F.text == "📊 Статус рассылки")
     dp.message.register(cmd_imap_diag, Command("imap_diag"))
@@ -241,7 +244,7 @@ async def _on_startup(bot: Bot) -> None:
     try:
         await register_bot_commands(bot)
     except Exception:
-        logger.exception("Не удалось зарегистрировать меню /start /send /stop /stat")
+        logger.exception("Не удалось зарегистрировать меню /start /send /stop /reset /stat")
 
     wh = await bot.get_webhook_info()
     logger.info(

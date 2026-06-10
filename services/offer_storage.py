@@ -226,12 +226,14 @@ async def save_all_offers_from_import(
     validated_rows: list[dict[str, Any]],
     norm_email,
     max_emails_per_offer: int = 1,
+    skip_queue_emails: set[str] | None = None,
 ) -> tuple[int, int, int, list[dict[str, Any]]]:
     """
     Сохранить ВСЕ объявления из файла (по одной валидной почте на лот).
     Returns: (offers_saved, offers_with_email, email_rows_saved, output_json_rows)
     """
     vindex = index_validated_rows(validated_rows)
+    skip_q = {e.strip().lower() for e in (skip_queue_emails or set()) if e and str(e).strip()}
     offers_saved = 0
     offers_with_email = 0
     email_rows_saved = 0
@@ -284,9 +286,10 @@ async def save_all_offers_from_import(
             ensure_offer_link_column(offer, fields["link"])
         offers_saved += 1
 
-        if picked:
+        queued = [em for em in picked[:max_emails_per_offer] if em.lower() not in skip_q]
+        if queued:
             offers_with_email += 1
-            for em in picked[:max_emails_per_offer]:
+            for em in queued:
                 session.add(OfferEmail(offer_id=offer.id, email=em))
                 email_rows_saved += 1
 

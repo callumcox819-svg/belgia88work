@@ -13,6 +13,7 @@ DEFAULT_BOT_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand(command="start", description="Запустить бота"),
     BotCommand(command="send", description="Запустить рассылку"),
     BotCommand(command="stop", description="Остановить рассылку"),
+    BotCommand(command="reset", description="Очистить очередь рассылки"),
     BotCommand(command="stat", description="Статус рассылки"),
 )
 

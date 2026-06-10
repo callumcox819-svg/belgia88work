@@ -144,29 +144,40 @@ def _remove_account_from_rotation(
     return [a for a in rotation_accounts if int(a.id) != aid]
 
 
+async def _mailing_reset_since_dt(session: AsyncSession, user_id: int):
+    from services.mailing_reset import get_mailing_reset_since, parse_mailing_reset_since
+
+    raw = await get_mailing_reset_since(session, user_id)
+    return parse_mailing_reset_since(raw)
+
+
 async def _get_targets(session: AsyncSession, user_id: int) -> List[OfferEmail]:
     """Targets are OfferEmail rows belonging to offers of this user."""
-    rows = (
-        await session.execute(
-            select(OfferEmail)
-            .join(Offer, Offer.id == OfferEmail.offer_id)
-            .where(Offer.user_id == user_id)
-            .options(selectinload(OfferEmail.offer))
-            .order_by(OfferEmail.id.asc())
-        )
-    ).scalars().all()
+    reset_dt = await _mailing_reset_since_dt(session, user_id)
+    stmt = (
+        select(OfferEmail)
+        .join(Offer, Offer.id == OfferEmail.offer_id)
+        .where(Offer.user_id == user_id)
+        .options(selectinload(OfferEmail.offer))
+        .order_by(OfferEmail.id.asc())
+    )
+    if reset_dt is not None:
+        stmt = stmt.where(Offer.created_at >= reset_dt)
+    rows = (await session.execute(stmt)).scalars().all()
     return list(rows)
 
 
 async def _get_targets_count(session: AsyncSession, user_id: int) -> int:
-    return (
-        await session.execute(
-            select(func.count(OfferEmail.id))
-            .select_from(OfferEmail)
-            .join(Offer, Offer.id == OfferEmail.offer_id)
-            .where(Offer.user_id == user_id)
-        )
-    ).scalar() or 0
+    reset_dt = await _mailing_reset_since_dt(session, user_id)
+    stmt = (
+        select(func.count(OfferEmail.id))
+        .select_from(OfferEmail)
+        .join(Offer, Offer.id == OfferEmail.offer_id)
+        .where(Offer.user_id == user_id)
+    )
+    if reset_dt is not None:
+        stmt = stmt.where(Offer.created_at >= reset_dt)
+    return (await session.execute(stmt)).scalar() or 0
 
 
 async def _purge_target(session: AsyncSession, user_id: int, offer_email_id: int):

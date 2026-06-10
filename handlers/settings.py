@@ -610,6 +610,7 @@ async def ref_open(callback: CallbackQuery, state: FSMContext):
             "Команда: <b>Narkologia</b>\n\n"
             "/send — запустить рассылку\n"
             "/stop — остановить рассылку\n"
+            "/reset — очистить очередь (лиды в БД остаются)\n"
             "/stat — статус рассылки"
         )
         await callback.message.edit_text(
@@ -671,6 +672,7 @@ async def ref_open_commands(callback: CallbackQuery, state: FSMContext):
         "⌨️ <b>Команды</b>\n\n"
         "/send — запустить рассылку\n"
         "/stop — остановить рассылку\n"
+        "/reset — очистить очередь (лиды в БД остаются)\n"
         "/stat — статус рассылки\n\n"
         "Также: просто пришли JSON/TXT с объявлениями — бот провалидирует и сохранит в БД."
     )
