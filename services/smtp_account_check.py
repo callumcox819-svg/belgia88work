@@ -201,6 +201,8 @@ def _connect_smtp_via_socks(proxy: Proxy, host: str, port: int, *, timeout: floa
     client.sock = sock
     client.file = sock.makefile("rb")
     client.host = host
+    # starttls() передаёт server_hostname=self._host (не .host) — иначе ValueError при фаст-рассылке
+    client._host = host
     client.port = int(port)
     code, _msg = client.getreply()
     if code != 220:
