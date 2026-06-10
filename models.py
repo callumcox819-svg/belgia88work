@@ -361,6 +361,7 @@ class IncomingMail(Base):
 
     ad_url = Column(Text, nullable=True)
     generated_link = Column(Text, nullable=True)
+    product_title = Column(String(500), nullable=True)
 
     resolved_offer_id = Column(ForeignKey("offers.id", ondelete="SET NULL"), nullable=True, index=True)
     resolved_offer_email_id = Column(ForeignKey("offer_emails.id", ondelete="SET NULL"), nullable=True, index=True)

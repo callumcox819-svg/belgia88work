@@ -50,8 +50,35 @@ def product_title_from_subject(subject: str) -> str:
     return subj
 
 
+def subject_title_agrees(subject: str, offer: Offer) -> bool:
+    """Poputka-style: Re: <товар> совпадает с названием лота (не только год/стоп-слова)."""
+    from services.offer_storage import offer_effective_title
+
+    needle = _norm_subject(subject).lower()
+    if len(needle) < 4:
+        return False
+    title = (offer_effective_title(offer) or "").strip().lower()
+    if not title or len(title) < 4:
+        return False
+    if needle == title:
+        return True
+    if len(title) >= 8 and title in needle:
+        return True
+    if len(needle) >= 8 and needle in title:
+        return True
+    mt = _meaningful_subject_tokens(needle)
+    tt = _meaningful_subject_tokens(title)
+    if mt and tt:
+        overlap = sum(1 for t in mt if t in tt)
+        if overlap >= 2:
+            return True
+        if overlap == 1 and len(mt) == 1 and len(tt) == 1:
+            return True
+    return False
+
+
 def offer_display_title(subject: str, offer: Offer | None) -> str:
-    """Товар в карточке: тема письма, если оффер из БД не совпадает с Re:."""
+    """Товар в карточке: при Re: на другой лот — тема письма, не последний оффер по email."""
     from services.offer_storage import offer_effective_title
 
     subj_t = product_title_from_subject(subject)
@@ -59,8 +86,7 @@ def offer_display_title(subject: str, offer: Offer | None) -> str:
         return subj_t or (subject or "").strip()
     ot = (offer_effective_title(offer) or "").strip()
     if subject_is_informative(subject):
-        sm = subject_match_score(subject, offer)
-        if sm >= _SUBJECT_EMAIL_AGREE_MIN_SCORE:
+        if subject_title_agrees(subject, offer):
             return ot or subj_t
         return subj_t or ot
     return ot or subj_t
@@ -112,13 +138,27 @@ _SUBJECT_STOP = frozenset(
         "for",
         "von",
         "from",
+        "het",
+        "de",
+        "van",
+        "voor",
+        "your",
+        "item",
+        "artikel",
     }
 )
+
+_YEAR_TOKEN_RE = re.compile(r"^20\d{2}$")
 
 
 def _subject_tokens(subj: str) -> list[str]:
     parts = re.findall(r"[a-z0-9]{3,}", (subj or "").lower())
     return [p for p in parts if p not in _SUBJECT_STOP]
+
+
+def _meaningful_subject_tokens(subj: str) -> list[str]:
+    """Токены темы без Re:/годов — чтобы «2026» не склеивал разные лоты."""
+    return [t for t in _subject_tokens(subj) if not _YEAR_TOKEN_RE.match(t)]
 
 
 def score_offer(
@@ -309,9 +349,15 @@ async def resolve_offer_for_incoming(
 
     subj_strong = subject_is_informative(subject)
 
-    # Re: … — email продавца не должен тянуть чужой лот (Ikea vs Baby milo).
+    # Re: … — сначала явное совпадение темы с лотом (poputka88), не «последний» email.
     if subj_strong and email_pairs:
         from services.offer_storage import offer_effective_link
+
+        for oe, off in email_pairs:
+            if not offer_effective_link(off):
+                continue
+            if subject_title_agrees(subject, off):
+                return int(off.id), int(oe.id)
 
         best_sm = -1.0
         best_off: Offer | None = None
@@ -326,6 +372,9 @@ async def resolve_offer_for_incoming(
                 best_oe = oe
         if best_off and best_sm >= _SUBJECT_EMAIL_AGREE_MIN_SCORE:
             return int(best_off.id), int(best_oe.id) if best_oe else None
+
+        if len(email_pairs) > 1:
+            return None, None
 
     best_offer_id: int | None = None
     best_email_id: int | None = None
@@ -389,7 +438,7 @@ def subject_match_score(subject: str, off: Offer) -> float:
     subj_l = subj.lower()
     title_l = title.lower()
     tok_hits = 0
-    for tok in _subject_tokens(subj):
+    for tok in _meaningful_subject_tokens(subj):
         if tok in title_l:
             tok_hits += 1
             score += 24.0
@@ -397,6 +446,8 @@ def subject_match_score(subject: str, off: Offer) -> float:
         score += 25.0 + tok_hits * 12.0
     if tok_hits >= 3:
         score += 40.0
+    if tok_hits == 0:
+        score = min(score, 35.0)
 
     wants_set = any(w in subj_l for w in ("komplette", "complet", "complete", "set "))
     if wants_set:
@@ -537,6 +588,63 @@ async def _load_offer(
     ).scalars().first()
 
 
+async def find_offer_by_incoming_subject(
+    session,
+    user_id: int,
+    subject: str,
+) -> Offer | None:
+    """Лид по теме Re: <товар> — как find_lead_by_incoming_subject в poputka88."""
+    from services.offer_storage import offer_effective_link, offer_effective_title
+
+    needle = _norm_subject(subject)
+    if len(needle) < 4:
+        return None
+    nl = needle.lower()
+
+    rows = (
+        await session.execute(
+            sa_select(Offer)
+            .where(Offer.user_id == int(user_id))
+            .order_by(Offer.id.desc())
+            .limit(2500)
+        )
+    ).scalars().all()
+
+    best: Offer | None = None
+    best_len = 0
+    for off in rows:
+        title = (offer_effective_title(off) or "").strip()
+        if not title or len(title) < 4:
+            continue
+        if not offer_effective_link(off):
+            continue
+        tl = title.lower()
+        if nl == tl or (len(tl) >= 8 and tl in nl) or (len(nl) >= 8 and nl in tl):
+            if len(title) > best_len:
+                best = off
+                best_len = len(title)
+        elif subject_title_agrees(subject, off):
+            if len(title) > best_len:
+                best = off
+                best_len = len(title)
+    return best
+
+
+async def incoming_mail_product_snapshot(
+    session,
+    *,
+    user_id: int,
+    subject: str,
+    from_email: str,
+    offer: Offer | None,
+) -> str:
+    """Название товара для карточки/БД — не путаем Re: с чужим лотом по email."""
+    off = offer
+    if off is None and subject_is_informative(subject):
+        off = await find_offer_by_incoming_subject(session, int(user_id), subject)
+    return (offer_display_title(subject, off) or "").strip()
+
+
 async def _load_conversation_link(
     session,
     *,
@@ -603,6 +711,11 @@ async def resolve_listing_for_incoming_mail(
             return None, ""
         ensure_offer_link_column(off, link)
         return off, link
+
+    if subject_is_informative(subj):
+        off_subj = await find_offer_by_incoming_subject(session, int(user_id), subj)
+        if off_subj:
+            return _ret(off_subj)
 
     if subject_is_informative(subj):
         recent = (
@@ -679,10 +792,13 @@ async def resolve_listing_for_incoming_mail(
 
     if pinned_offer_id:
         off = await _load_offer(session, user_id=int(user_id), offer_id=int(pinned_offer_id))
-        min_sc = _SUBJECT_EMAIL_AGREE_MIN_SCORE if subject_is_informative(subj) else None
-        pair = _aqua_offer_pair(subj, off, min_score=min_sc)
-        if pair:
-            return pair
+        if off and subject_is_informative(subj) and not subject_title_agrees(subj, off):
+            pinned_offer_id = None
+        else:
+            min_sc = _SUBJECT_EMAIL_AGREE_MIN_SCORE if subject_is_informative(subj) else None
+            pair = _aqua_offer_pair(subj, off, min_score=min_sc)
+            if pair:
+                return pair
 
     curl = (conv_ad_url or "").strip()
     if curl:
@@ -711,10 +827,22 @@ async def resolve_listing_for_incoming_mail(
         if pair:
             return pair
 
-    if not subject_is_informative(subj):
-        seller_offers = await list_offers_for_seller_email(
-            session, user_id=int(user_id), from_email=fe
+    seller_offers = await list_offers_for_seller_email(session, user_id=int(user_id), from_email=fe)
+    if subject_is_informative(subj) and len(seller_offers) > 1:
+        off = _pick_best_linked_by_subject(
+            seller_offers,
+            subject=subj,
+            min_score=_SUBJECT_EMAIL_AGREE_MIN_SCORE,
+            min_gap=10.0,
         )
+        if off:
+            return _ret(off)
+        for cand in seller_offers:
+            if subject_title_agrees(subj, cand):
+                return _ret(cand)
+        return None, ""
+
+    if not subject_is_informative(subj):
         if len(seller_offers) == 1:
             return _ret(seller_offers[0])
 

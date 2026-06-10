@@ -917,6 +917,7 @@ async def mail_card_offer_meta(
     subject: str = "",
     from_name: str = "",
     body_text: str = "",
+    stored_product_title: str | None = None,
 ) -> tuple[int | None, str | None, str | None, str | None, str | None]:
     """Return offer_id, service_label, product_title, photo_url, offer_price."""
     from services.offer_matching import offer_display_title
@@ -924,6 +925,10 @@ async def mail_card_offer_meta(
 
     offer_id = resolved_offer_id
     service_label = product_title = photo_url = offer_price = None
+    snap = (stored_product_title or "").strip()
+    if snap:
+        product_title = snap
+
     try:
         off = await resolve_offer_for_mail_card(
             session,
@@ -938,7 +943,8 @@ async def mail_card_offer_meta(
         )
         if off:
             offer_id = int(off.id)
-            product_title = offer_display_title(subject, off) or None
+            if not snap:
+                product_title = offer_display_title(subject, off) or None
             service_label = _service_label_from_link(offer_effective_link(off))
             ph = offer_effective_photo(off)
             photo_url = ph or None
@@ -981,6 +987,7 @@ async def build_mail_card_from_mail(
         subject=str(getattr(mail, "subject", "") or ""),
         from_name=str(getattr(mail, "from_name", "") or ""),
         body_text=str(getattr(mail, "body", "") or ""),
+        stored_product_title=(getattr(mail, "product_title", None) or "").strip() or None,
     )
 
     generated_link = (getattr(mail, "generated_link", None) or "").strip()
@@ -1211,6 +1218,7 @@ async def _process_mails_for_account_impl(
 
                     subj = subject or ""
                     listing_url = ""
+                    saved_product_title = ""
                     try:
                         offer_bound, listing_url = await resolve_listing_for_incoming_mail(
                             session,
@@ -1241,6 +1249,26 @@ async def _process_mails_for_account_impl(
                         existing.resolved_offer_email_id = resolved_offer_email_id
                         if listing_url:
                             existing.ad_url = listing_url.strip()
+                        from services.offer_matching import incoming_mail_product_snapshot
+
+                        snap_offer = offer_bound
+                        if snap_offer is None and resolved_offer_id:
+                            snap_offer = (
+                                await session.execute(
+                                    sa_select(Offer)
+                                    .where(Offer.id == int(resolved_offer_id))
+                                    .where(Offer.user_id == int(user_id))
+                                    .limit(1)
+                                )
+                            ).scalars().first()
+                        saved_product_title = await incoming_mail_product_snapshot(
+                            session,
+                            user_id=int(user_id),
+                            subject=subj,
+                            from_email=from_email_clean,
+                            offer=snap_offer,
+                        )
+                        existing.product_title = saved_product_title
                         await _db_commit_retry(session)
                     except Exception:
                         logger.exception(
@@ -1455,6 +1483,7 @@ async def _process_mails_for_account_impl(
                         subject=subject or "",
                         from_name=(from_name or "").strip(),
                         body_text=body_clean or "",
+                        stored_product_title=saved_product_title or None,
                     )
             except Exception:
                 logger.exception("Failed to load Offer meta for incoming mail: from=%s", from_email_clean)

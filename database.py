@@ -198,6 +198,17 @@ async def _ensure_incoming_mail_telegram_message_id_column() -> None:
         )
 
 
+async def _ensure_incoming_mail_product_title_column() -> None:
+    """Снимок названия товара на момент входящего (poputka88 — без путаницы Re: vs email)."""
+    if engine.dialect.name != "postgresql":
+        return
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("ALTER TABLE incoming_mails ADD COLUMN IF NOT EXISTS product_title VARCHAR(500)")
+        )
+
+
 async def _ensure_incoming_mail_link_columns() -> None:
     """Автомиграция: добавляем incoming_mails.ad_url и incoming_mails.generated_link если их нет.
 
@@ -299,6 +310,11 @@ async def init_db() -> None:
         await _ensure_incoming_mail_link_columns()
     except Exception as e:
         log.error("Failed incoming_mails link columns migration: %s", e)
+
+    try:
+        await _ensure_incoming_mail_product_title_column()
+    except Exception as e:
+        log.error("Failed incoming_mails.product_title migration: %s", e)
 
     try:
         await _ensure_incoming_mail_telegram_message_id_column()
