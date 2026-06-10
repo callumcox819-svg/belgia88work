@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import smtplib
-from email.mime.text import MIMEText
+from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 from typing import Tuple
+
+from services.sender import _plain_body_content_transfer_encoding, _strip_html
 
 
 SMTP_BY_PROVIDER = {
@@ -38,9 +40,12 @@ def _send_smtp_blocking(
 ):
     host, port = _smtp_host_port(provider, from_email)
 
-    msg = MIMEText(body or "", "plain", "utf-8")
+    b = body or ""
+    msg = EmailMessage()
+    msg.set_content(
+        b, subtype="plain", charset="utf-8", cte=_plain_body_content_transfer_encoding(b)
+    )
     msg["Subject"] = subject or ""
-    # ✅ ВАЖНО: имя отправителя для plain-text писем
     msg["From"] = formataddr((sender_name, from_email)) if sender_name else from_email
     msg["To"] = to_email
     msg["Date"] = formatdate(localtime=True)
@@ -95,21 +100,29 @@ def _send_html_smtp_blocking_checked(
     Uses multipart/alternative (plain + html), UTF-8.
     We return message-id so caller can display it for debugging.
     """
-    from email.message import EmailMessage
-
     host, port = _smtp_host_port(provider, from_email)
 
+    html = html_body or ""
+    plain = _strip_html(html) or " "
     msg = EmailMessage()
+    msg.set_content(
+        plain,
+        subtype="plain",
+        charset="utf-8",
+        cte=_plain_body_content_transfer_encoding(plain),
+    )
+    msg.add_alternative(
+        html,
+        subtype="html",
+        charset="utf-8",
+        cte=_plain_body_content_transfer_encoding(html),
+    )
     msg["Subject"] = subject or ""
     msg["From"] = formataddr((sender_name, from_email)) if sender_name else from_email
     msg["To"] = to_email
     msg["Date"] = formatdate(localtime=True)
     msgid = make_msgid()
     msg["Message-ID"] = msgid
-
-    # Plain fallback (keep it simple/ASCII)
-    msg.set_content("Please open this email in an HTML-capable client.")
-    msg.add_alternative(html_body or "", subtype="html")
 
     try:
         with smtplib.SMTP(host, port, timeout=30) as server:

@@ -37,19 +37,11 @@ TEST_MAIL_RECIPIENTS_KEY = "test_mail_recipients"
 MAX_TEST_RECIPIENTS = 4
 TEST_SEND_DELAY_SEC = 2.0
 
-# Только ASCII: тема EN + тело EN (не финские пресеты — иначе спам при той же auth)
-TEST_SUBJECTS = [
-    "Test message - Order update",
-    "Test message - Please confirm",
-    "Test message - Action required",
-    "Test message - Status notification",
-    "Test message - Delivery check",
-]
-
-TEST_MAIL_BODIES = [
-    "This is a mailbox delivery test. Please ignore this message.",
-    "Test only - checking whether messages arrive in the inbox.",
-    "Delivery check - no action required. Thank you.",
+# Запасные NL-тексты (ASCII → 7bit), если пресетов нет — как живое 2dehands-сообщение
+_BE_FALLBACK_BODIES = [
+    "Hallo! Is dit artikel nog beschikbaar? Alvast bedankt.",
+    "Goedendag, ik heb interesse in uw advertentie. Is deze nog te koop?",
+    "Dag, ik zou graag willen weten of u dit nog verkoopt. Groeten.",
 ]
 
 class TestMailStates(StatesGroup):
@@ -120,7 +112,7 @@ async def _menu_text(session, user: User) -> str:
     lines = [
         "<b>🧪 Тест маил</b>",
         "",
-        "Тема и текст — как в рассылке: <b>случайный оффер</b> из БД, тема = название товара.",
+        "Тема и текст — <b>1:1 как /send</b>: оффер из БД, умный пресет, тема = шаблон OFFER.",
         f"Получателей в списке: <b>{len(saved)}/{MAX_TEST_RECIPIENTS}</b>",
     ]
     if saved:
@@ -276,17 +268,6 @@ async def _pick_random_offer(session, user_id: int) -> Offer | None:
     ).scalars().first()
 
 
-def _test_mail_use_presets() -> bool:
-    import os
-
-    return (os.getenv("TEST_MAIL_USE_PRESETS", "0") or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
 async def _build_test_message(
     session,
     *,
@@ -308,10 +289,9 @@ async def _build_test_message(
         ).first()
         item_title = (row[0] if row else "") or "OFFER"
 
-    subject = random.choice(TEST_SUBJECTS)
+    from services.subject_offer import subject_for_offer
 
-    if not _test_mail_use_presets():
-        return subject, random.choice(TEST_MAIL_BODIES), item_title
+    subject = subject_for_offer(item_title)
 
     price = (getattr(offer, "price", "") or "").strip() if offer else ""
     link = (getattr(offer, "link", "") or "").strip() if offer else ""
@@ -332,7 +312,9 @@ async def _build_test_message(
     if not (base_text or "").strip():
         base_text = await pick_random_first_sms(tg_id, item_title)
     if not (base_text or "").strip():
-        base_text = f"Hei! Onko tuote vielä myynnissä? {item_title}".strip()
+        base_text = random.choice(_BE_FALLBACK_BODIES)
+        if item_title and item_title != "OFFER":
+            base_text = f"{base_text} ({item_title})"
 
     body = apply_placeholders(base_text, link=link, ctx=ctx)
     from services.offer_text import trim_trailing_offer_title
@@ -411,6 +393,7 @@ async def _run_mass_test(message: Message, tg_id: int) -> None:
                     subject, body, item_title = await _build_test_message(
                         session, tg_id=tg_id, user=user, offer=offer
                     )
+                    sender_name = getattr(user, "sender_name", None)
                     ok, err, msgid = await send_email_via_account_with_proxy(
                         session,
                         user_id,
@@ -418,6 +401,8 @@ async def _run_mass_test(message: Message, tg_id: int) -> None:
                         to_email,
                         subject,
                         body,
+                        sender_name=sender_name,
+                        mailing_fast=False,
                     )
 
                 acc_email = account.email
@@ -481,7 +466,8 @@ async def _run_mass_test(message: Message, tg_id: int) -> None:
             if fail_lines:
                 summary += "\n\n<b>Ошибки:</b>\n" + "\n".join(fail_lines[:6])
             summary += (
-                "\n\n<i>Смотрите Inbox и Спам. Тема без «Test message» — как в рассылке.</i>"
+                "\n\n<i>Смотрите Inbox и Спам. Письмо собрано как /send "
+                "(7bit/quoted-printable, без base64).</i>"
             )
             await status.edit_text(summary, parse_mode="HTML")
         except Exception as e:

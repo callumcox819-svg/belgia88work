@@ -6,8 +6,6 @@ import os
 import re
 import smtplib
 from email.message import EmailMessage
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from email.utils import formataddr, formatdate, make_msgid
 from typing import Optional, Tuple, List
 
@@ -106,12 +104,33 @@ def _strip_html(html_text: str) -> str:
 
 
 def _plain_body_content_transfer_encoding(body: str) -> str:
-    """7bit для ASCII; quoted-printable для финского — не base64 как у MIMEText по умолчанию."""
+    """7bit для ASCII; quoted-printable для NL/BE/FI — не base64."""
     try:
         (body or "").encode("ascii")
         return "7bit"
     except UnicodeEncodeError:
         return "quoted-printable"
+
+
+def _set_message_headers(
+    msg: EmailMessage,
+    *,
+    from_addr: str,
+    to_addr: str,
+    subj: str,
+    disp_name: Optional[str],
+) -> None:
+    if disp_name:
+        msg["From"] = formataddr((disp_name, from_addr))
+    else:
+        msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg["Subject"] = subj
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(
+        domain=(from_addr.split("@")[-1] if "@" in from_addr else None)
+    )
+    msg["Reply-To"] = from_addr
 
 
 def _build_message(
@@ -135,36 +154,32 @@ def _build_message(
         is_html = _looks_like_html(b)
 
     if is_html:
-        msg = MIMEMultipart("alternative")
+        msg = EmailMessage()
         plain = _strip_html(b) or " "
-        msg.attach(MIMEText(plain, "plain", "utf-8"))
-        msg.attach(MIMEText(b, "html", "utf-8"))
-        if disp_name:
-            msg["From"] = formataddr((disp_name, from_addr))
-        else:
-            msg["From"] = from_addr
-        msg["To"] = to_addr
-        msg["Subject"] = subj
-        msg["Date"] = formatdate(localtime=True)
-        msg["Message-ID"] = make_msgid(
-            domain=(from_addr.split("@")[-1] if "@" in from_addr else None)
+        msg.set_content(
+            plain,
+            subtype="plain",
+            charset="utf-8",
+            cte=_plain_body_content_transfer_encoding(plain),
         )
-        msg["Reply-To"] = from_addr
+        msg.add_alternative(
+            b,
+            subtype="html",
+            charset="utf-8",
+            cte=_plain_body_content_transfer_encoding(b),
+        )
+        _set_message_headers(
+            msg, from_addr=from_addr, to_addr=to_addr, subj=subj, disp_name=disp_name
+        )
         return msg
 
     msg = EmailMessage()
-    msg.set_content(b, subtype="plain", charset="utf-8", cte=_plain_body_content_transfer_encoding(b))
-    if disp_name:
-        msg["From"] = formataddr((disp_name, from_addr))
-    else:
-        msg["From"] = from_addr
-    msg["To"] = to_addr
-    msg["Subject"] = subj
-    msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = make_msgid(
-        domain=(from_addr.split("@")[-1] if "@" in from_addr else None)
+    msg.set_content(
+        b, subtype="plain", charset="utf-8", cte=_plain_body_content_transfer_encoding(b)
     )
-    msg["Reply-To"] = from_addr
+    _set_message_headers(
+        msg, from_addr=from_addr, to_addr=to_addr, subj=subj, disp_name=disp_name
+    )
     return msg
 
 
