@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
 from aiogram.fsm.context import FSMContext
@@ -283,7 +285,10 @@ async def aqua_test_keys(callback: CallbackQuery) -> None:
         try:
             await verify_narkologia_auth(user_api_key=user_key, team_api_key=team_key)
         except AquaError as e:
-            return await callback.message.answer(f"❌ API: {e}")
+            return await callback.message.answer(
+                f"❌ <b>Narkologia API</b>\n<code>{html.escape(str(e)[:400])}</code>",
+                parse_mode="HTML",
+            )
     await callback.message.answer("✅ Ключи работают (Narkologia API).", parse_mode="HTML")
 
 

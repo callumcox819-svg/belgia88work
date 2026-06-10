@@ -1722,7 +1722,7 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
                 image=offer_image,
             )
         except AquaError as e:
-            await callback.message.answer(f"❌ AQUA: {e}")
+            await callback.message.answer(f"❌ <b>Narkologia API</b>\n<code>{_e(str(e)[:400])}</code>", parse_mode="HTML")
             await callback.answer()
             return
 
@@ -1909,7 +1909,10 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
                 image=offer_image,
             )
         except AquaError as e:
-            await callback.message.answer(f"❌ AQUA: {e}")
+            await callback.message.answer(
+                f"❌ <b>Narkologia API</b>\n<code>{_e(str(e)[:400])}</code>",
+                parse_mode="HTML",
+            )
             return await callback.answer()
 
         await _upsert_convlink(
@@ -2994,7 +2997,7 @@ async def cb_offer_price(callback: CallbackQuery, state: FSMContext):
         "💶 <b>Цена</b>\n\n"
         f"Текущая цена: <code>{_e(current)}</code>\n\n"
         "Отправь новую цену (например: <code>500</code> или <code>500.00 EUR</code>).\n"
-        "Бот пересоздаст AQUA-ссылку и отправит её к письму.\n\n"
+        "Бот пересоздаст ссылку Narkologia и отправит её к письму.\n\n"
         "Чтобы отменить — отправь <code>-</code>.",
         parse_mode="HTML",
     )

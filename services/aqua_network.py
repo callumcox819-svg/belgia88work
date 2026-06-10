@@ -122,7 +122,7 @@ async def _request_json(
                         data = await resp.json(content_type=None)
                     except Exception:
                         data = None
-                    if resp.status != 200:
+                    if not (200 <= resp.status < 300):
                         msg = ""
                         if isinstance(data, dict):
                             msg = str(data.get("message") or data.get("error") or "")
