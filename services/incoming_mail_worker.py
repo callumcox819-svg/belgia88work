@@ -217,6 +217,24 @@ _PLATFORM_SYSTEM_NAME_HINTS = frozenset(
     }
 )
 
+_AMAZON_DOMAIN_RE = re.compile(
+    r"^(?:[a-z0-9-]+\.)*amazon\.(?:"
+    r"com|co\.jp|de|fr|co\.uk|es|it|ca|com\.au|in|nl|se|be|pl|"
+    r"sa|sg|com\.mx|com\.br|ae|eg"
+    r")(?:\.[a-z]{2,})?$",
+    re.IGNORECASE,
+)
+
+
+def _is_amazon_system_domain(domain: str) -> bool:
+    """account-update@amazon.co.jp и др. — не ответы продавцов 2dehands."""
+    d = (domain or "").strip().lower()
+    if not d:
+        return False
+    if _AMAZON_DOMAIN_RE.match(d):
+        return True
+    return d.endswith(".amazon.com") or d.endswith(".amazon.co.jp")
+
 
 def _is_platform_system_mail(from_email: str, from_name: str, subject: str = "") -> bool:
     """Коды верификации / уведомления маркетплейсов (Wallapop и т.д.)."""
@@ -240,6 +258,11 @@ def _is_platform_system_mail(from_email: str, from_name: str, subject: str = "")
         if root in _PLATFORM_SYSTEM_NAME_HINTS or name in domain:
             return True
     if name == "facebook" and (domain == "facebookmail.com" or domain.endswith(".facebookmail.com")):
+        return True
+    if _is_amazon_system_domain(domain):
+        return True
+    name_compact = name.replace(" ", "")
+    if "amazon" in name_compact and _is_amazon_system_domain(domain):
         return True
     return False
 

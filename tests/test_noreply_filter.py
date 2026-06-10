@@ -59,6 +59,16 @@ class TestNoreplyFilter(unittest.TestCase):
         self.assertTrue(_is_platform_system_mail("noreply@facebookmail.com", "Facebook"))
         self.assertFalse(_is_platform_system_mail("someone@facebook.com", "John"))
 
+    def test_blocks_amazon_account_update(self):
+        self.assertTrue(
+            _is_automated_system_sender(
+                "account-update@amazon.co.jp",
+                "Amazon.co.jp",
+                "新しいAmazonアカウントの確認",
+            )
+        )
+        self.assertTrue(_is_platform_system_mail("no-reply@amazon.com", "Amazon"))
+
 
 if __name__ == "__main__":
     unittest.main()
