@@ -32,7 +32,7 @@ REPLY_SMTP_TIMEOUT_SEC = max(15, min(60, int(os.getenv("REPLY_SMTP_TIMEOUT_SEC",
 REPLY_SMTP_MAX_PROXIES = max(1, min(6, int(os.getenv("REPLY_SMTP_MAX_PROXIES", "2"))))
 
 # Рассылка /send: несколько SOCKS5, таймаут на каждую попытку.
-MAIL_SMTP_TIMEOUT_SEC = max(20, min(60, int(os.getenv("MAIL_SMTP_TIMEOUT_SEC", "35"))))
+MAIL_SMTP_TIMEOUT_SEC = max(20, min(90, int(os.getenv("MAIL_SMTP_TIMEOUT_SEC", "45"))))
 MAIL_SMTP_MAX_PROXIES = max(1, min(12, int(os.getenv("MAIL_SMTP_MAX_PROXIES", "10"))))
 
 _LAST_OK_PROXY_ID: dict[int, int] = {}
@@ -109,12 +109,12 @@ async def pick_sticky_proxy_for_fast_mailing(
     session: AsyncSession,
     user_id: int,
 ) -> Optional[Proxy]:
-    """Случайный 🟢 SOCKS5 для фаст-рассылки; если нет — None."""
+    """Один 🟢 SOCKS5 (ротирующий gateway) на всю фаст-сессию — первый по id."""
     proxies = await _list_active_socks5_proxies(session, user_id)
+    if not proxies:
+        return None
     green = [p for p in proxies if p.is_active is True]
-    if green:
-        return random.choice(green)
-    return None
+    return (green[0] if green else proxies[0])
 
 
 def _order_proxies_for_send(
@@ -276,17 +276,29 @@ async def send_email_via_account_with_proxy_isolated(
     is_html: Optional[bool] = None,
     *,
     mailing_fast: bool = True,
+    sticky_proxy_id: int | None = None,
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     """
     Параллельный фаст: каждый ящик — свой SOCKS5-сокет, без глобального _PROXY_LOCK.
+    Ротирующий SOCKS5: sticky_proxy_id = один gateway на всю /send (как в норм софте).
     """
     proxies = await _list_active_socks5_proxies(session, user_id)
     if not proxies:
         return False, NO_ACTIVE_PROXY, None
 
-    order = _order_proxies_for_send(
-        int(user_id), proxies, fast=False, account_id=int(account.id)
-    )
+    if sticky_proxy_id is not None:
+        order = _order_proxies_for_send(
+            int(user_id),
+            proxies,
+            fast=False,
+            sticky_proxy_id=int(sticky_proxy_id),
+        )
+        if not order:
+            return False, NO_ACTIVE_PROXY, None
+    else:
+        order = _order_proxies_for_send(
+            int(user_id), proxies, fast=False, account_id=int(account.id)
+        )
     smtp_tmo = MAIL_SMTP_TIMEOUT_SEC
     last_err: str | None = None
     last_msgid: str | None = None
@@ -348,11 +360,20 @@ async def send_email_via_account_with_proxy_isolated(
 
         if not should_retry_send_with_other_proxy(err):
             return False, err, last_msgid
+        # Фаст + один ротирующий gateway: не переключаемся на 2-й прокси из БД
+        if mailing_fast and sticky_proxy_id is not None:
+            break
 
-    hint = (
-        f"Ни один из {tried} SOCKS5 не достучался до Gmail SMTP "
-        f"(последняя: {last_err or 'timeout'})."
-    )
+    if sticky_proxy_id is not None and tried <= 1:
+        hint = (
+            f"SOCKS5 proxy_id={sticky_proxy_id} — нет ответа от Gmail SMTP "
+            f"({last_err or 'timeout'}). Повтор даст новый IP (ротация)."
+        )
+    else:
+        hint = (
+            f"Ни один из {tried} SOCKS5 не достучался до Gmail SMTP "
+            f"(последняя: {last_err or 'timeout'})."
+        )
     if is_smtp_timeout_error(last_err):
         return False, f"SMTP_TIMEOUT|all_proxies|{hint}", last_msgid
     return False, last_err or NO_ACTIVE_PROXY, last_msgid

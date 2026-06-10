@@ -21,7 +21,6 @@ from models import EmailAccount, OfferEmail, Offer, User, Proxy
 
 from services.mailing_send import (
     MAIL_FAST_PARALLEL_ACCOUNTS,
-    fast_wave_size,
     MAIL_VERIFY_SENT,
     mailing_send_overall_timeout_sec,
     send_mailing_one,
@@ -363,6 +362,15 @@ async def _start_sending_inner(
 
     sendable_px = int(px_summary.ok) + int(px_summary.unknown)
 
+    sticky_proxy_id: int | None = None
+    if fast_mailing:
+        from services.smtp_proxy_send import pick_sticky_proxy_for_fast_mailing
+
+        async with db_session() as session:
+            sticky_px = await pick_sticky_proxy_for_fast_mailing(session, int(db_user_id))
+            if sticky_px:
+                sticky_proxy_id = int(sticky_px.id)
+
     async with db_session() as session:
         state = SendingState(
             user_id=tg_user_id,
@@ -376,6 +384,7 @@ async def _start_sending_inner(
             last_error="",
             last_status="FAST" if fast_mailing else "NORMAL",
             fast_mailing=fast_mailing,
+            sticky_proxy_id=sticky_proxy_id,
         )
         set_sending_state(tg_user_id, state=state)
 
@@ -391,9 +400,12 @@ async def _start_sending_inner(
         if MAIL_FAST_PARALLEL_ACCOUNTS > 0
         else "<b>все active</b>"
     )
+    sticky_px_note = ""
+    if fast_mailing and sticky_proxy_id:
+        sticky_px_note = f" · SOCKS5 id=<b>{sticky_proxy_id}</b> (ротация, 1 gateway)"
     proxy_mode = (
         f"⚡ <b>Фаст рассыл</b> — <b>параллельно</b> {fast_acc_label} ящиков за волну, "
-        f"без пауз (🟢/🟡 SOCKS5, прокси не 🔴 на временный сбой)"
+        f"без пауз{sticky_px_note}"
         if fast_mailing
         else f"🌐 все живые SOCKS5 (до <b>{MAIL_SMTP_MAX_PROXIES}</b> попыток на письмо)"
     )
@@ -659,20 +671,12 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                             pass
                         break
 
-                    from services.smtp_proxy_send import _list_active_socks5_proxies
-
-                    active_proxies = await _list_active_socks5_proxies(session, db_user_id)
                     wave_cap = (
                         MAIL_FAST_PARALLEL_ACCOUNTS
                         if MAIL_FAST_PARALLEL_ACCOUNTS > 0
                         else len(eligible_accounts)
                     )
-                    wave_n = fast_wave_size(
-                        proxy_count=len(active_proxies),
-                        accounts=len(eligible_accounts),
-                        targets=len(targets),
-                        wave_cap=wave_cap,
-                    )
+                    wave_n = min(len(targets), len(eligible_accounts), wave_cap)
                     wave_accounts = [
                         eligible_accounts[(acc_idx + i) % len(eligible_accounts)]
                         for i in range(wave_n)
@@ -699,11 +703,10 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                     set_sending_state(tg_user_id, state=state)
 
                     logger.info(
-                        "[mailing fast wave] accounts=%s targets=%s proxies=%s cap=%s",
+                        "[mailing fast wave] accounts=%s sticky_proxy_id=%s targets=%s",
                         wave_n,
+                        getattr(state, "sticky_proxy_id", None),
                         [t.email for t in wave_targets[:5]],
-                        len(active_proxies),
-                        wave_cap,
                     )
 
                     async def _parallel_send(
@@ -724,6 +727,9 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                                         subj_w,
                                         body_w,
                                         sender_name=sender_name,
+                                        sticky_proxy_id=getattr(
+                                            state, "sticky_proxy_id", None
+                                        ),
                                     ),
                                     timeout=send_one_timeout,
                                 )
