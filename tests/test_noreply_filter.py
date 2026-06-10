@@ -1,6 +1,10 @@
 import unittest
 
-from services.incoming_mail_worker import _is_noreply_automated_sender
+from services.incoming_mail_worker import (
+    _is_apple_system_mail,
+    _is_automated_system_sender,
+    _is_noreply_automated_sender,
+)
 
 
 class TestNoreplyFilter(unittest.TestCase):
@@ -27,6 +31,15 @@ class TestNoreplyFilter(unittest.TestCase):
 
     def test_allows_mailer_daemon(self):
         self.assertFalse(_is_noreply_automated_sender("mailer-daemon@gmail.com"))
+
+    def test_blocks_apple_id(self):
+        self.assertTrue(_is_apple_system_mail("appleid@id.apple.com", "Apple"))
+        self.assertTrue(
+            _is_automated_system_sender("appleid@id.apple.com", "Apple", "Verify your Apple Account")
+        )
+
+    def test_allows_icloud_seller(self):
+        self.assertFalse(_is_apple_system_mail("seller.name@icloud.com", "Jan"))
 
 
 if __name__ == "__main__":

@@ -178,6 +178,41 @@ def _is_noreply_automated_sender(from_email: str) -> bool:
     return bool(_NOREPLY_LOCAL_RE.match(local))
 
 
+_APPLE_SYSTEM_DOMAINS = frozenset(
+    {
+        "id.apple.com",
+        "email.apple.com",
+        "insideapple.apple.com",
+        "gs.apple.com",
+    }
+)
+
+
+def _is_apple_system_mail(from_email: str, from_name: str, subject: str = "") -> bool:
+    """Apple ID / верификация аккаунта — не карточки продавцов."""
+    f = (from_email or "").strip().lower()
+    if _is_mailer_daemon_notice(f, subject or ""):
+        return False
+    if not f or "@" not in f:
+        return False
+    local, _, domain = f.rpartition("@")
+    if domain in _APPLE_SYSTEM_DOMAINS:
+        return True
+    if domain == "apple.com" and local in ("appleid", "no-reply", "noreply"):
+        return True
+    name = (from_name or "").strip().lower()
+    if name == "apple" and (domain in _APPLE_SYSTEM_DOMAINS or domain.endswith(".apple.com")):
+        return True
+    return False
+
+
+def _is_automated_system_sender(from_email: str, from_name: str = "", subject: str = "") -> bool:
+    """Системные авто-письма (no-reply, Apple ID) — без карточек в TG."""
+    return _is_noreply_automated_sender(from_email) or _is_apple_system_mail(
+        from_email, from_name, subject
+    )
+
+
 def _is_google_system_mail(from_email: str, from_name: str, subject: str) -> bool:
     """Системные письма Google (безопасность, уведомления) — в Telegram не шлём."""
     f = (from_email or "").strip().lower()
@@ -1178,7 +1213,9 @@ async def _process_mails_for_account_impl(
         if (not is_spam_box) and _looks_like_spam(from_email, from_name, subject, body):
             continue
 
-        if (not is_spam_box) and _is_noreply_automated_sender(from_email_clean_pre):
+        if (not is_spam_box) and _is_automated_system_sender(
+            from_email_clean_pre, from_name or "", subject or ""
+        ):
             continue
 
         try:
