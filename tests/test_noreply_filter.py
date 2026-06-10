@@ -4,6 +4,7 @@ from services.incoming_mail_worker import (
     _is_apple_system_mail,
     _is_automated_system_sender,
     _is_noreply_automated_sender,
+    _is_platform_system_mail,
 )
 
 
@@ -40,6 +41,19 @@ class TestNoreplyFilter(unittest.TestCase):
 
     def test_allows_icloud_seller(self):
         self.assertFalse(_is_apple_system_mail("seller.name@icloud.com", "Jan"))
+
+    def test_blocks_wallapop(self):
+        self.assertTrue(_is_platform_system_mail("info@wallapop.com", "Wallapop"))
+        self.assertTrue(
+            _is_automated_system_sender(
+                "info@wallapop.com",
+                "Wallapop",
+                "Código de verificación del email",
+            )
+        )
+
+    def test_allows_seller_not_platform(self):
+        self.assertFalse(_is_platform_system_mail("jan.verkoper@gmail.com", "Jan"))
 
 
 if __name__ == "__main__":

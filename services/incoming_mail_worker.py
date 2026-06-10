@@ -188,6 +188,57 @@ _APPLE_SYSTEM_DOMAINS = frozenset(
 )
 
 
+# Авто-уведомления чужих площадок (не 2dehands/bpost) — не ответы продавцов.
+_PLATFORM_SYSTEM_DOMAINS = frozenset(
+    {
+        "wallapop.com",
+        "mail.wallapop.com",
+        "vinted.com",
+        "mail.vinted.com",
+        "leboncoin.fr",
+        "subito.it",
+        "marktplaats.nl",
+        "mail.instagram.com",
+        "facebookmail.com",
+        "account.tiktok.com",
+        "tiktok.com",
+    }
+)
+_PLATFORM_SYSTEM_NAME_HINTS = frozenset(
+    {
+        "wallapop",
+        "vinted",
+        "instagram",
+        "facebook",
+        "tiktok",
+        "leboncoin",
+        "subito",
+        "marktplaats",
+    }
+)
+
+
+def _is_platform_system_mail(from_email: str, from_name: str, subject: str = "") -> bool:
+    """Коды верификации / уведомления маркетплейсов (Wallapop и т.д.)."""
+    f = (from_email or "").strip().lower()
+    if _is_mailer_daemon_notice(f, subject or ""):
+        return False
+    if not f or "@" not in f:
+        return False
+    _local, _, domain = f.rpartition("@")
+    if domain in _PLATFORM_SYSTEM_DOMAINS:
+        return True
+    for plat in ("wallapop", "vinted", "instagram", "facebook", "tiktok"):
+        if domain == f"{plat}.com" or domain.endswith(f".{plat}.com"):
+            return True
+    name = (from_name or "").strip().lower()
+    if name in _PLATFORM_SYSTEM_NAME_HINTS:
+        root = domain.split(".")[-2] if "." in domain else domain
+        if root in _PLATFORM_SYSTEM_NAME_HINTS or name in domain:
+            return True
+    return False
+
+
 def _is_apple_system_mail(from_email: str, from_name: str, subject: str = "") -> bool:
     """Apple ID / верификация аккаунта — не карточки продавцов."""
     f = (from_email or "").strip().lower()
@@ -207,9 +258,11 @@ def _is_apple_system_mail(from_email: str, from_name: str, subject: str = "") ->
 
 
 def _is_automated_system_sender(from_email: str, from_name: str = "", subject: str = "") -> bool:
-    """Системные авто-письма (no-reply, Apple ID) — без карточек в TG."""
-    return _is_noreply_automated_sender(from_email) or _is_apple_system_mail(
-        from_email, from_name, subject
+    """Системные авто-письма (no-reply, Apple, Wallapop…) — без карточек в TG."""
+    return (
+        _is_noreply_automated_sender(from_email)
+        or _is_apple_system_mail(from_email, from_name, subject)
+        or _is_platform_system_mail(from_email, from_name, subject)
     )
 
 
