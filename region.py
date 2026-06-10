@@ -8,7 +8,7 @@ BOT_DISPLAY_NAME = "Belgium Bot"
 MARKETPLACE_NAME = "2dehands.be"
 TEAM_NAME = "Narkologia"
 
-# Коды service в GOO Network API: 2dehands_be, bpost_be
+# Коды service в Narkologia API: 2dehands_be, bpost_be
 AQUA_DEFAULT_SERVICE = (os.getenv("AQUA_DEFAULT_SERVICE", "2dehands_be") or "2dehands_be").strip()
 
 HTML_DATA_DIR = "HTMLbe"

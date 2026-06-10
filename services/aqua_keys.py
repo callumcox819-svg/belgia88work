@@ -1,4 +1,4 @@
-"""GOO NETWORK — Бельгия: 2dehands.be, bpost.be (команда Narkologia)."""
+"""Narkologia API — Бельгия: 2dehands.be, bpost.be."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def is_valid_aqua_service(code: str | None) -> bool:
 def aqua_service_for_api(code: str | None) -> str:
     n = normalize_aqua_service(code)
     if not n:
-        raise ValueError(f"Unknown GOO service: {code!r}")
+        raise ValueError(f"Unknown service: {code!r}")
     return n
 
 
@@ -82,6 +82,8 @@ def normalize_aqua_api_key(value: str | None) -> str:
         return ""
     low = v.lower()
     if low.startswith("apikey"):
+        v = v[6:].lstrip(":").strip()
+    elif low.startswith("bearer"):
         v = v[6:].lstrip(":").strip()
     return v
 

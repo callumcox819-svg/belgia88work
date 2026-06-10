@@ -1,4 +1,4 @@
-"""Генерация ссылок AQUA для оффера / входящих."""
+"""Генерация ссылок Narkologia для оффера / входящих."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from services.aqua_keys import (
     aqua_service_for_api,
     get_user_aqua_api_keys_async,
     get_user_aqua_service,
-    get_user_goo_profile_id,
+    get_user_profile_address,
+    get_user_profile_buyer_name,
     is_valid_aqua_service,
     user_profile_fields_complete,
 )
@@ -29,7 +30,7 @@ async def resolve_aqua_image_url(
     offer: Offer | None,
     image: str | None = None,
 ) -> str:
-    """AQUA no-parse требует поле image — URL фото объявления."""
+    """URL фото для поля photo в APEX API (опционально, но желательно)."""
     for candidate in (
         (image or "").strip(),
         offer_effective_photo(offer),
@@ -56,11 +57,7 @@ async def resolve_aqua_image_url(
     if _is_http_url(default):
         return default
 
-    raise AquaError(
-        "Нет URL фото для AQUA (поле image обязательно). "
-        "Загрузите JSON с item_photo, добавьте AQUA_DEFAULT_IMAGE_URL на Railway "
-        "или укажите реальный URL объявления 2dehands.be (не главную страницу)."
-    )
+    return ""
 
 
 async def aqua_generate_for_offer(
@@ -83,11 +80,8 @@ async def aqua_generate_for_offer(
             "(название, имя получателя, адрес)."
         )
 
-    profile_id = get_user_goo_profile_id(user)
-    if not profile_id:
-        raise AquaError(
-            "Нет profileID. Сохраните профиль ещё раз: ⚙️ → 🧾 Профиль → Заполнить / изменить."
-        )
+    buyer_name = await get_user_profile_buyer_name(session, user)
+    address = await get_user_profile_address(session, user)
 
     service = await get_user_aqua_service(session, user)
     if not is_valid_aqua_service(service):
@@ -108,9 +102,10 @@ async def aqua_generate_for_offer(
         user_api_key=user_key,
         team_api_key=team_key,
         service=api_service,
-        profile_id=profile_id,
+        buyer_name=buyer_name,
+        address=address,
         listing_url=listing_url,
         name=title,
         price=p,
-        image=image,
+        image=image or None,
     )

@@ -61,14 +61,20 @@ async def build_offer_html_ctx(
     *,
     link: str = "",
 ) -> dict[str, str]:
-    """Контекст для HTML Posti/Tori: оффер из БД + email + AQUA-ссылка."""
+    """Контекст для HTML-шаблонов: оффер из БД + профиль + ссылка Narkologia."""
+    from datetime import datetime
+
     from sqlalchemy import select
 
-    from models import Offer, OfferEmail
+    from models import Offer, OfferEmail, User
+    from services.aqua_keys import AQUA_PROFILE_ADDRESS_KEY, AQUA_PROFILE_NAME_KEY
+    from services.user_settings import get_user_setting
 
     title = ""
     price = ""
     photo = ""
+    buyer_name = ""
+    address = ""
     try:
         canon = _canon_email(seller_email)
         off = (
@@ -88,11 +94,26 @@ async def build_offer_html_ctx(
     except Exception:
         pass
 
+    try:
+        user = await session.get(User, int(user_id))
+        if user:
+            buyer_name = (
+                await get_user_setting(session, user, AQUA_PROFILE_NAME_KEY) or ""
+            ).strip()
+            address = (
+                await get_user_setting(session, user, AQUA_PROFILE_ADDRESS_KEY) or ""
+            ).strip()
+    except Exception:
+        pass
+
     return {
         "ITEM_TITLE": title,
         "PRICE": price,
         "IMAGE_URL": photo,
         "SELLER_EMAIL": _canon_email(seller_email),
+        "BUYER_NAME": buyer_name,
+        "ADDRESS": address,
+        "DATE": datetime.now().strftime("%d/%m/%Y"),
         "LINK": (link or "").strip(),
     }
 

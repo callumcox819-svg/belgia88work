@@ -105,7 +105,7 @@ async def cust_open(callback: CallbackQuery):
         raw_svc = (await get_user_setting(session, user, AQUA_SERVICE_KEY) or "").strip()
         if not is_valid_aqua_service(raw_svc):
             return await callback.answer(
-                "Сначала выберите сервис: 👤 Профиль → 🧭 Выбор сервиса",
+                "Сначала выберите сервис: 👤 Профиль → 🧭 Сервис",
                 show_alert=True,
             )
         files = list_html_templates_for_service(raw_svc)

@@ -39,17 +39,18 @@ class Config:
 
     GLOBAL_SUBJECT_TEMPLATE = os.getenv("GLOBAL_SUBJECT_TEMPLATE", "OFFER").strip() or "OFFER"
 
-    # GOO NETWORK — команда Narkologia (Бельгия)
-    GOO_API_BASE = os.getenv("GOO_API_BASE", "https://api-old.goo.network").strip().rstrip("/")
+    # Narkologia / APEX API (Бельгия) — docs.domainforapi.com
+    NARKOLOGIA_API_BASE = (
+        os.getenv("NARKOLOGIA_API_BASE")
+        or os.getenv("APEX_API_BASE")
+        or os.getenv("GOO_API_BASE")
+        or ""
+    ).strip().rstrip("/")
     TEAM_NAME = TEAM_NAME
     NARKOLOGIA_TEAM_API_KEY = (
         os.getenv("NARKOLOGIA_TEAM_API_KEY") or os.getenv("AQUA_TEAM_API_KEY") or ""
     ).strip()
     AQUA_TEAM_API_KEY = NARKOLOGIA_TEAM_API_KEY
-    AQUA_PROFILES_LIST_PATH = (
-        os.getenv("AQUA_PROFILES_LIST_PATH", "/api/generate/single/profile/list") or ""
-    ).strip()
-    AQUA_TEAM_PROFILES_JSON = (os.getenv("AQUA_TEAM_PROFILES_JSON") or "").strip()
     AQUA_DEFAULT_IMAGE_URL = (os.getenv("AQUA_DEFAULT_IMAGE_URL") or "").strip()
     COUNTRY_CODE = "BE"
     COUNTRY_LABEL = "Бельгия"

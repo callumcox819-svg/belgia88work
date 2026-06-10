@@ -71,7 +71,7 @@ async def load_html_for_user(
         return (
             "",
             None,
-            "Не выбран сервис GOO. Открой 👤 Профиль → 🧭 Выбор сервиса (2dehands / bpost).",
+            "Не выбран сервис. Открой 👤 Профиль → 🧭 Сервис (2dehands / bpost).",
         )
     sub = html_subdir_for_service(raw)
     p = html_template_path(raw, filename)

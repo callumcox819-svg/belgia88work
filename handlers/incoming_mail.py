@@ -36,7 +36,8 @@ from services.aqua_keys import (
     get_user_aqua_api_keys_async,
     get_user_aqua_profile_display,
     get_user_aqua_service,
-    get_user_goo_profile_id,
+    get_user_profile_address,
+    get_user_profile_buyer_name,
     is_valid_aqua_service,
 )
 from services.aqua_link import aqua_generate_for_offer
@@ -119,11 +120,8 @@ async def _aqua_generate_link(
         raise AquaError(
             "Профиль не заполнен. ⚙️ → 🧾 Профиль → Заполнить / изменить."
         )
-    profile_id = get_user_goo_profile_id(user)
-    if not profile_id:
-        raise AquaError(
-            "Нет profileID. Сохраните профиль ещё раз в ⚙️ → 🧾 Профиль."
-        )
+    buyer_name = await get_user_profile_buyer_name(session, user)
+    address = await get_user_profile_address(session, user)
     service = await get_user_aqua_service(session, user)
     if not is_valid_aqua_service(service):
         raise AquaError("Не задан сервис площадки.")
@@ -137,7 +135,8 @@ async def _aqua_generate_link(
         user_api_key=user_key,
         team_api_key=team_key,
         service=aqua_service_for_api(service),
-        profile_id=profile_id,
+        buyer_name=buyer_name,
+        address=address,
         listing_url=listing_url,
         name=title,
         price=price,
