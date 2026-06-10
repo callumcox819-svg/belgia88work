@@ -343,7 +343,9 @@ async def _start_sending_inner(
         user_for_flags = await get_or_create_user(session, tg_user_id)
         fast_mailing = await _user_fast_mailing_enabled(session, user_for_flags)
 
-    px_ok, px_summary, px_detail = await preflight_proxies_for_mailing(int(db_user_id))
+    px_ok, px_summary, px_detail = await preflight_proxies_for_mailing(
+        int(db_user_id), fast=fast_mailing
+    )
     if not px_ok:
         try:
             await _edit_status_text(
@@ -370,6 +372,17 @@ async def _start_sending_inner(
             sticky_px = await pick_sticky_proxy_for_fast_mailing(session, int(db_user_id))
             if sticky_px:
                 sticky_proxy_id = int(sticky_px.id)
+        if not sticky_proxy_id:
+            try:
+                await _edit_status_text(
+                    status_msg,
+                    "❌ <b>Фаст рассыл</b>: нет 🟢 SOCKS5 (SMTP OK). "
+                    "Проверьте логин/пароль прокси в «Прокси».",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            return
 
     async with db_session() as session:
         state = SendingState(

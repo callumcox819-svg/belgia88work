@@ -114,7 +114,7 @@ async def pick_sticky_proxy_for_fast_mailing(
     if not proxies:
         return None
     green = [p for p in proxies if p.is_active is True]
-    return (green[0] if green else proxies[0])
+    return green[0] if green else None
 
 
 def _order_proxies_for_send(

@@ -161,8 +161,10 @@ def parse_proxy_string(raw: str) -> Optional[dict]:
             scheme = _normalize_proxy_type(u.scheme)
             host = u.hostname
             port = u.port
-            user = u.username
-            pwd = u.password
+            from urllib.parse import unquote
+
+            user = unquote(u.username) if u.username else None
+            pwd = unquote(u.password) if u.password else None
             if not host or not port or not _is_probable_host(host):
                 return None
             return {
@@ -657,11 +659,15 @@ async def _proxy_add_work(
             try:
                 session.add(proxy)
                 await session.commit()
-                ok_count += 1
                 preview = original_text.replace("\n", " / ")
                 if len(preview) > 120:
                     preview = preview[:120] + "…"
-                details.append(f"✅ `{preview}` — {info}")
+                if ok:
+                    ok_count += 1
+                    details.append(f"✅ `{preview}` — {info}")
+                else:
+                    fail_count += 1
+                    details.append(f"❌ `{preview}` — {info}")
             except Exception as e:
                 logger.exception("Error saving proxy")
                 fail_count += 1
