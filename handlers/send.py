@@ -118,13 +118,12 @@ async def _safe_rollback(session: AsyncSession):
 
 
 async def _get_active_accounts(session: AsyncSession, user_id: int) -> List[EmailAccount]:
+    """Ящики для /send: только status active/enabled, без smtp_blocked."""
     rows = (
         await session.execute(
             select(EmailAccount).where(
                 EmailAccount.user_id == user_id,
-                # В текущей модели EmailAccount нет is_active.
-                # Активность аккаунта хранится в поле status (см. handlers/accounts.py).
-                EmailAccount.status == "active",
+                EmailAccount.status.in_(("active", "enabled")),
             )
         )
     ).scalars().all()

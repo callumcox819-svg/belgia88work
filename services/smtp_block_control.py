@@ -75,6 +75,15 @@ def is_smtp_account_block_error(err: str | None) -> bool:
     return any(p in t for p in phrases)
 
 
+def is_smtp_blocked_status(status: str | None) -> bool:
+    return (status or "").strip().lower() == "smtp_blocked"
+
+
+def smtp_blocked_should_persist(account: EmailAccount) -> bool:
+    """smtp_blocked не снимать автоматически (SMTP-check только логин, не лимит 5.4.5)."""
+    return is_smtp_blocked_status(getattr(account, "status", None))
+
+
 def short_block_reason(err: str | None) -> str:
     s = normalize_send_error(err or "")
     if "|" in s:
@@ -131,7 +140,12 @@ async def mark_account_smtp_blocked(
     if not force and not is_smtp_account_block_error(err):
         return False
 
-    was_blocked = (account.status or "").strip().lower() == "smtp_blocked"
+    row = await session.get(EmailAccount, int(account.id))
+    if not row:
+        return False
+    account = row
+
+    was_blocked = is_smtp_blocked_status(account.status)
     account.status = "smtp_blocked"
     account.last_error = (err or "")[:1000]
     try:

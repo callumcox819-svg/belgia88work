@@ -232,7 +232,8 @@ async def _bulk_add_accounts(
             if existing:
                 existing.password = work.password
                 existing.provider = prov
-                existing.status = "active"
+                if (existing.status or "").strip().lower() != "smtp_blocked":
+                    existing.status = "active"
             else:
                 session.add(
                     EmailAccount(
@@ -311,7 +312,14 @@ def accounts_menu_kb(
             text="🗑",
             callback_data=f"acc_del:{acc.id}:{page}:{status_filter}",
         )
-        rows.append([email_btn, delete_btn])
+        if st == "smtp_blocked":
+            restore_btn = InlineKeyboardButton(
+                text="↩️",
+                callback_data=f"acc_restore:{acc.id}:{page}:{status_filter}",
+            )
+            rows.append([email_btn, restore_btn, delete_btn])
+        else:
+            rows.append([email_btn, delete_btn])
 
     # Навигация страниц
     nav: List[InlineKeyboardButton] = []
@@ -621,6 +629,18 @@ async def acc_check_smtp(callback: CallbackQuery) -> None:
                         continue
 
                     prev = (row.status or "").strip().lower()
+                    from services.smtp_block_control import smtp_blocked_should_persist
+
+                    if smtp_blocked_should_persist(row) and st == "active":
+                        blocked_n += 1
+                        reason = short_block_reason(row.last_error)
+                        lines.append(
+                            f"🟡 <code>{_e(res.email)}</code> — smtp_blocked (рассылка)\n"
+                            f"   <i>{_e(reason or 'лимит/блок Gmail')}</i>\n"
+                            f"   <i>«Проверить SMTP» не снимает блок — только вручную</i>"
+                        )
+                        continue
+
                     row.status = st
                     row.last_error = (err or "")[:1000] if err else None
                     await session.commit()
@@ -846,9 +866,45 @@ async def process_accounts_input(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("acc_info:"))
 async def account_info_click(callback: CallbackQuery) -> None:
     await callback.answer(
-        "Это список аккаунтов. Чтобы удалить — жми на значок 🗑 справа.",
+        "🟢 — рассылка · 🟡 smtp_blocked (только IMAP) · ↩️ вернуть в рассылку · 🗑 удалить",
         show_alert=False,
     )
+
+
+@router.callback_query(F.data.startswith("acc_restore:"))
+async def account_restore_smtp(callback: CallbackQuery) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) < 2:
+        return await callback.answer("Ошибка", show_alert=True)
+    try:
+        acc_id = int(parts[1])
+    except ValueError:
+        return await callback.answer("Ошибка", show_alert=True)
+    page = 1
+    status_filter = "all"
+    if len(parts) >= 4:
+        try:
+            page = int(parts[2])
+        except ValueError:
+            page = 1
+        status_filter = parts[3] or "all"
+
+    async with Session() as session:
+        account = await session.get(EmailAccount, acc_id)
+        if not account:
+            return await callback.answer("Аккаунт не найден", show_alert=True)
+        user = await get_user(session, callback.from_user.id)
+        if not user or account.user_id != user.id:
+            return await callback.answer("Нет доступа", show_alert=True)
+        if (account.status or "").strip().lower() != "smtp_blocked":
+            return await callback.answer("Ящик уже в рассылке", show_alert=False)
+        account.status = "active"
+        account.last_error = None
+        await session.commit()
+
+    await render_accounts_menu(callback, callback.from_user.id, page=page, status_filter=status_filter)
+    await callback.answer("↩️ Снова в рассылке", show_alert=False)
+
 
 @router.callback_query(F.data.startswith("acc_del:"))
 async def account_delete_click(callback: CallbackQuery) -> None:
