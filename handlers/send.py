@@ -227,8 +227,9 @@ async def _build_message_for_target(session: AsyncSession, tg_user_id: int, tgt:
             base_text = ("Hello! Is this item still available? " + (item_title or "OFFER")).strip()
 
     body = apply_placeholders(base_text, link=link, ctx=ctx)
-    from services.offer_text import trim_trailing_offer_title
+    from services.offer_text import ensure_item_title_in_body, trim_trailing_offer_title
 
+    body = ensure_item_title_in_body(body, item_title)
     body = trim_trailing_offer_title(body, item_title)
 
     from services.subject_offer import subject_for_offer

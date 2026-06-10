@@ -317,8 +317,9 @@ async def _build_test_message(
             base_text = f"{base_text} ({item_title})"
 
     body = apply_placeholders(base_text, link=link, ctx=ctx)
-    from services.offer_text import trim_trailing_offer_title
+    from services.offer_text import ensure_item_title_in_body, trim_trailing_offer_title
 
+    body = ensure_item_title_in_body(body, item_title)
     body = trim_trailing_offer_title(body, item_title)
     return subject, body, item_title
 
