@@ -32,7 +32,7 @@ REPLY_SMTP_MAX_PROXIES = max(1, min(6, int(os.getenv("REPLY_SMTP_MAX_PROXIES", "
 
 # Рассылка /send: несколько SOCKS5, таймаут на каждую попытку.
 MAIL_SMTP_TIMEOUT_SEC = max(20, min(60, int(os.getenv("MAIL_SMTP_TIMEOUT_SEC", "35"))))
-MAIL_SMTP_MAX_PROXIES = max(1, min(6, int(os.getenv("MAIL_SMTP_MAX_PROXIES", "3"))))
+MAIL_SMTP_MAX_PROXIES = max(1, min(12, int(os.getenv("MAIL_SMTP_MAX_PROXIES", "10"))))
 
 _LAST_OK_PROXY_ID: dict[int, int] = {}
 # Пара (user_id, account_id) → proxy_id — один ящик стабильнее через один egress (инбокс).
@@ -96,6 +96,14 @@ async def _list_active_socks5_proxies(session: AsyncSession, user_id: int) -> Li
     return out
 
 
+def _proxy_try_limit(*, fast: bool, proxy_count: int) -> int:
+    if fast:
+        return 1
+    if proxy_count <= 0:
+        return 0
+    return min(proxy_count, MAIL_SMTP_MAX_PROXIES)
+
+
 def _order_proxies_for_send(
     user_id: int,
     proxies: List[Proxy],
@@ -123,7 +131,7 @@ def _order_proxies_for_send(
             tail.append(p)
     random.shuffle(tail)
     order = head + mid + tail
-    limit = REPLY_SMTP_MAX_PROXIES if fast else MAIL_SMTP_MAX_PROXIES
+    limit = _proxy_try_limit(fast=fast, proxy_count=len(order))
     return order[:limit]
 
 
@@ -226,6 +234,8 @@ async def send_batch_via_account_with_proxy(
     account: EmailAccount,
     items: list[tuple[str, str, str]],
     sender_name: Optional[str] = None,
+    *,
+    fast: bool = False,
 ) -> List[Tuple[bool, Optional[str]]]:
     """Отправка пачки: неудачные адреса повторяются на следующем SOCKS5 (не «3 из 10»)."""
     n = len(items)
@@ -237,7 +247,7 @@ async def send_batch_via_account_with_proxy(
         return [(False, NO_ACTIVE_PROXY) for _ in items]
 
     order = _order_proxies_for_send(
-        int(user_id), proxies, fast=False, account_id=int(account.id)
+        int(user_id), proxies, fast=fast, account_id=int(account.id)
     )
     merged: List[Tuple[bool, Optional[str]]] = [(False, NO_ACTIVE_PROXY) for _ in range(n)]
     pending: List[int] = list(range(n))

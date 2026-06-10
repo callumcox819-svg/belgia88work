@@ -334,24 +334,28 @@ def is_smtp_timeout_error(err: str | None) -> bool:
 
 
 def is_definite_proxy_failure(err: str | None) -> bool:
-    """Можно помечать прокси неактивным только при явной ошибке туннеля."""
+    """Помечать прокси 🔴 только при явном падении туннеля (не таймаут SMTP)."""
+    if is_smtp_timeout_error(err):
+        return False
     s = normalize_send_error(err)
     if not is_proxy_error_marker(s):
         return False
     t = s.lower()
     if "no_active_proxy" in t or "no_proxy_context" in t:
         return False
+    if is_transient_connection_error(err):
+        return False
     definite = (
         "generalproxyerror",
-        "socks",
-        "proxy connection",
         "can't connect to proxy",
         "cannot connect to proxy",
-        "authentication failed",  # socks auth
-        "0x05",  # socks5 reply
+        "proxy connection failed",
+        "socks5 authentication",
+        "socks authentication",
+        "authentication failed",
+        "0x05",
         "network is unreachable",
         "getaddrinfo failed",
-        "pysocks",
     )
     return any(x in t for x in definite)
 

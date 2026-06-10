@@ -9,7 +9,7 @@ from typing import Optional
 
 from sqlalchemy import select, or_
 
-from models import Proxy, UserSetting
+from models import Proxy
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,6 @@ class _ReentrantAsyncLock:
 
 _PROXY_LOCK = _ReentrantAsyncLock()
 _DB_SOCKET_LOCK = _ReentrantAsyncLock()
-# round-robin по активным прокси (на user_id из БД)
-_RR_INDEX: dict[int, int] = {}
-
 import socket as _stdlib_socket
 import smtplib as _smtplib
 
@@ -78,16 +75,6 @@ async def choose_proxy_for_user(
     Возвращает один активный SOCKS5 прокси пользователя.
     """
     try:
-        rot = (
-            await session.execute(
-                select(UserSetting.value)
-                .where(UserSetting.user_id == int(user_id))
-                .where(UserSetting.key == "proxy_rotation")
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        rot_on = str(rot or "0").strip().lower() in {"1", "true", "yes", "on", "y"}
-
         active_cond = or_(Proxy.is_active.is_(True), Proxy.is_active.is_(None))
 
         def _smtp_eligible(p: Proxy) -> bool:
@@ -125,21 +112,15 @@ async def choose_proxy_for_user(
             return items[0]
 
         uid = int(user_id)
-        if rot_on:
-            chosen = random.choice(items)
-        else:
-            # Раньше без ротации всегда брался только первый id — новые прокси не использовались.
-            idx = _RR_INDEX.get(uid, 0) % len(items)
-            _RR_INDEX[uid] = idx + 1
-            chosen = items[idx]
+        chosen = random.choice(items)
 
         logger.info(
-            "SMTP proxy selected user_id=%s proxy_id=%s %s:%s rot=%s",
+            "SMTP proxy selected user_id=%s proxy_id=%s %s:%s pool=%s",
             uid,
             chosen.id,
             chosen.host,
             chosen.port,
-            "random" if rot_on else "rr",
+            len(items),
         )
         return chosen
     except Exception:

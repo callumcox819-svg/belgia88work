@@ -53,6 +53,8 @@ async def send_mailing_one(
     subject: str,
     body: str,
     sender_name: Optional[str] = None,
+    *,
+    fast_mailing: bool = False,
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     last_err: Optional[str] = None
     last_msgid: Optional[str] = None
@@ -66,6 +68,7 @@ async def send_mailing_one(
             subject,
             body,
             sender_name=sender_name,
+            fast=fast_mailing,
         )
         err = normalize_send_error(err)
         last_err = err

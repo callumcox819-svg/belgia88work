@@ -45,6 +45,13 @@ from services.settings import load_timing
 router = Router(name="send")
 logger = logging.getLogger(__name__)
 
+FAST_MAILING_KEY = "fast_mailing"
+
+
+async def _user_fast_mailing_enabled(session: AsyncSession, user: User) -> bool:
+    v = await get_user_setting(session, user, FAST_MAILING_KEY)
+    return str(v or "").strip().lower() in {"1", "true", "yes", "on", "y"}
+
 
 async def _edit_status_text(status_msg: Message, text: str, **kwargs) -> None:
     """edit_text принимает только InlineKeyboardMarkup, не ReplyKeyboardMarkup."""
@@ -350,6 +357,10 @@ async def _start_sending_inner(
     sendable_px = int(px_summary.ok) + int(px_summary.unknown)
 
     async with db_session() as session:
+        user_for_flags = await get_or_create_user(session, tg_user_id)
+        fast_mailing = await _user_fast_mailing_enabled(session, user_for_flags)
+
+    async with db_session() as session:
         state = SendingState(
             user_id=tg_user_id,
             is_running=True,
@@ -371,6 +382,12 @@ async def _start_sending_inner(
     from services.mailing_send import MAIL_SEND_RETRIES, MAIL_VERIFY_SENT
     from services.smtp_proxy_send import MAIL_SMTP_MAX_PROXIES, MAIL_SMTP_TIMEOUT_SEC
 
+    proxy_mode = (
+        "⚡ <b>Фаст рассыл</b> — 1 SOCKS5 на письмо"
+        if fast_mailing
+        else f"🌐 все живые SOCKS5 (до <b>{MAIL_SMTP_MAX_PROXIES}</b> попыток на письмо)"
+    )
+
     try:
         await _edit_status_text(
             status_msg,
@@ -378,10 +395,12 @@ async def _start_sending_inner(
             f"В очереди: <b>{total_targets}</b> · ящиков active: <b>{len(accounts)}</b>\n"
             f"{px_detail}\n"
             f"В рассылке SOCKS5: <b>{sendable_px}</b> (🔴 не используются)\n"
-            f"Ротация: <b>1 ящик → 1 умный пресет → 1 адрес</b> → пауза MIN–MAX\n"
+            f"{proxy_mode}\n"
+            f"Схема: <b>1 ящик → 1 умный пресет → 1 адрес</b> → пауза MIN–MAX\n"
             f"Успех в /stat: <b>{'IMAP Sent' if MAIL_VERIFY_SENT else 'SMTP 250+NOOP'}</b>\n"
-            f"Прокси: до <b>{MAIL_SMTP_MAX_PROXIES}</b> × <b>{MAIL_SMTP_TIMEOUT_SEC}</b> с · "
-            f"повторов <b>{MAIL_SEND_RETRIES}</b>\n\n"
+            f"Таймаут SOCKS5: <b>{MAIL_SMTP_TIMEOUT_SEC}</b> с · повторов <b>{MAIL_SEND_RETRIES}</b>\n\n"
+            "<i>Таймаут при отправке ≠ мёртвый прокси: бот пробует другие из списка. "
+            "🔴 только при явном падении туннеля.</i>\n"
             "<i>Ящик с Message blocked снимается с рассылки, IMAP остаётся.</i>",
             parse_mode="HTML",
         )
@@ -594,8 +613,9 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                 timing = await load_timing(session, tg_user_id)
                 min_delay = float(timing.get("min_delay", 2.0))
                 max_delay = float(timing.get("max_delay", 4.0))
+                fast_mailing = await _user_fast_mailing_enabled(session, user)
 
-                # Ротация ящиков + случайный умный пресет на каждое письмо.
+                # Ящики по кругу + случайный умный пресет на каждое письмо.
                 acc: EmailAccount | None = None
                 if mail_max_per_account > 0:
                     eligible = [
@@ -647,6 +667,7 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                                 subject,
                                 body,
                                 sender_name=sender_name,
+                                fast_mailing=fast_mailing,
                             ),
                             timeout=send_one_timeout,
                         )
