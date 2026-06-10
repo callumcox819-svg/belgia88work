@@ -711,12 +711,15 @@ def _kb_preset_pick(
 
 
 def _kb_html_pick(acc_id: int, uid: str):
-    """HTML picker (strict TZ): only GO / PUSH / SMS / BACK."""
+    """HTML picker (strict TZ): GO / GO(new) / PUSH / SMS / BACK."""
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🟢 GO", callback_data=f"mail_reply_html:go:{acc_id}:{uid}")],
+            [
+                InlineKeyboardButton(text="🟢 GO", callback_data=f"mail_reply_html:go:{acc_id}:{uid}"),
+                InlineKeyboardButton(text="🟢 GO(new)", callback_data=f"mail_reply_html:go_new:{acc_id}:{uid}"),
+            ],
             [InlineKeyboardButton(text="📣 PUSH", callback_data=f"mail_reply_html:push:{acc_id}:{uid}")],
             [InlineKeyboardButton(text="💬 SMS", callback_data=f"mail_reply_html:sms:{acc_id}:{uid}")],
             [InlineKeyboardButton(text="🔙 BACK", callback_data=f"mail_reply_html:back:{acc_id}:{uid}")],
@@ -2289,6 +2292,7 @@ async def cb_mail_reply_html_send(callback: CallbackQuery, state: FSMContext):
     file_map = {
         "pro": "confirmation.html",
         "go": "confirmation.html",
+        "go_new": "confirmation_new.html",
         "pickup": "pickup.html",
         "sms": "sms.html",
         "push": "push.html",
@@ -2300,7 +2304,7 @@ async def cb_mail_reply_html_send(callback: CallbackQuery, state: FSMContext):
 
     mail_uid = uid
     tg_id = int(callback.from_user.id)
-    html_kind_label = kind.upper()
+    html_kind_label = {"go_new": "GO(new)"}.get(kind, kind.upper())
     sent_pkg: dict = {}
 
     async with Session() as session:

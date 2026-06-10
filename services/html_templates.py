@@ -14,6 +14,7 @@ from services.aqua_keys import (
 HTMLBE_ROOT = Path("data") / HTML_DATA_DIR
 
 GO_FILENAME = "confirmation.html"
+GO_NEW_FILENAME = "confirmation_new.html"
 BACK_FILENAME = "return.html"
 
 

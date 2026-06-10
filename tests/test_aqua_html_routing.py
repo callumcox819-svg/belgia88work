@@ -18,6 +18,9 @@ class AquaHtmlRoutingTests(unittest.TestCase):
         p = html_template_path("2dehands_be", "confirmation.html")
         self.assertIsNotNone(p)
         self.assertTrue(p.is_file())
+        p_new = html_template_path("2dehands_be", "confirmation_new.html")
+        self.assertIsNotNone(p_new)
+        self.assertTrue(p_new.is_file())
 
 
 if __name__ == "__main__":
