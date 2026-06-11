@@ -64,13 +64,15 @@ def classify_incoming_row(row: IncomingMail) -> str:
         return "platform"
     if row.resolved_offer_email_id:
         return "seller_matched"
+    if row.resolved_offer_id and bool(getattr(row, "mailing_bound", False)):
+        return "seller_matched"
     if row.resolved_offer_id:
         return "offer_title_only"
     return "unmatched"
 
 
 _CATEGORY_LABELS = {
-    "seller_matched": "🟢 Продавец (email в базе) — ближе всего к «живому»",
+    "seller_matched": "🟢 Продавец (рассылка / email в базе) — ближе всего к «живому»",
     "offer_title_only": "📦 Только оффер/тема (email отправителя не совпал)",
     "platform": "🏪 Платформа / сервис (2dehands.be, bpost.be, gmx…)",
     "google": "📧 Google / системное (в TG обычно нет карточки)",
@@ -130,7 +132,7 @@ def format_incoming_breakdown_html(data: dict[str, Any]) -> str:
 
     lines = [
         f"\n<b>Разбор входящих в БД ({total}):</b>",
-        f"≈ «живых» (email продавца в базе): <b>{data.get('likely_live', 0)}</b>",
+        f"≈ «живых» (рассылка или email в базе): <b>{data.get('likely_live', 0)}</b>",
         f"Диалогов с карточкой в TG (anchor): <b>{data.get('tg_dialogs', 0)}</b>",
         "",
     ]

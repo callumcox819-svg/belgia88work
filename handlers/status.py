@@ -7,7 +7,7 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 
 from database import db_session
 from models import OfferEmail, Offer, EmailAccount, IncomingMail
@@ -243,7 +243,10 @@ async def _collect_db_stats(
             await session.execute(
                 select(func.count(IncomingMail.id)).where(
                     IncomingMail.user_id == db_user_id,
-                    IncomingMail.resolved_offer_email_id.is_not(None),
+                    or_(
+                        IncomingMail.resolved_offer_email_id.is_not(None),
+                        IncomingMail.mailing_bound.is_(True),
+                    ),
                 )
             )
         ).scalar() or 0
@@ -279,8 +282,10 @@ async def cmd_imap_diag(message: Message) -> None:
             )
         ).scalar() or 0
 
+        from services.incoming_lead_rebind import rebind_stale_incoming_mails
         from services.incoming_mail_stats import build_incoming_breakdown, format_incoming_breakdown_html
 
+        rebind_stats = await rebind_stale_incoming_mails(session, int(user.id))
         breakdown = await build_incoming_breakdown(session, int(user.id))
         breakdown_html = format_incoming_breakdown_html(breakdown)
 
@@ -323,6 +328,11 @@ async def cmd_imap_diag(message: Message) -> None:
             )
         if len(accs) > 15:
             lines.append(f"… и ещё {len(accs) - 15}")
+    if rebind_stats.get("scanned"):
+        lines.append(
+            f"\n<b>Перепривязка:</b> проверено <b>{rebind_stats['scanned']}</b>, "
+            f"обновлено <b>{rebind_stats.get('updated', 0)}</b>"
+        )
     lines.append(breakdown_html)
     lines.append(
         "\n<i>Тест: ответьте на письмо рассылки → ~30 с карточка в TG. "

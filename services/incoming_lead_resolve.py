@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from models import Offer
-from services.mailing_send_log import find_offer_from_mailing_log
+from services.mailing_send_log import find_offer_from_mailing_log, offer_was_mailed_to
 from services.offer_matching import (
     find_offer_by_incoming_subject,
     narkologia_link_title_from_mail,
@@ -90,8 +90,12 @@ async def resolve_offer_for_incoming_lead(
     if off:
         link = (offer_effective_link(off) or "").strip()
         if link:
-            snap = _snapshot_from_offer(subject, off, mailing_bound=False)
-            return off, link, "subject_only", snap
+            mailed = await offer_was_mailed_to(
+                session, int(user_id), int(off.id), contact_email
+            )
+            snap = _snapshot_from_offer(subject, off, mailing_bound=mailed)
+            how = "subject_mailing" if mailed else "subject_only"
+            return off, link, how, snap
 
     return None, "", "", snap
 

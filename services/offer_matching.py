@@ -964,7 +964,14 @@ async def list_offers_for_seller_email(
             continue
         seen.add(oid)
         out.append(off)
-    return out
+    if out:
+        return out
+
+    from services.mailing_send_log import list_offers_from_mailing_log
+
+    return await list_offers_from_mailing_log(
+        session, int(user_id), from_email, limit=80
+    )
 
 
 def _pick_best_offer_by_subject_scores(
