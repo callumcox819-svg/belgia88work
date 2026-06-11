@@ -5,15 +5,30 @@ from __future__ import annotations
 from models import Offer
 from services.mailing_send_log import find_offer_from_mailing_log, offer_was_mailed_to
 from services.offer_matching import (
+    _load_conversation_link,
     find_offer_by_incoming_subject,
+    is_seller_reply_subject,
     narkologia_link_title_from_mail,
     resolve_listing_for_incoming_mail,
 )
 from services.offer_storage import (
+    find_offer_by_link,
     offer_effective_link,
     offer_effective_photo,
     offer_effective_price,
 )
+
+
+def _reply_bound(*, how: str, subject: str, mailed: bool = False, has_conv_anchor: bool = False) -> bool:
+    if mailed or (how or "").startswith("mailing"):
+        return True
+    if how == "subject_mailing":
+        return True
+    if has_conv_anchor and is_seller_reply_subject(subject):
+        return True
+    if how in ("listing", "subject_only", "conversation") and is_seller_reply_subject(subject):
+        return True
+    return False
 
 
 def _service_label_from_link(link: str) -> str | None:
@@ -81,7 +96,12 @@ async def resolve_offer_for_incoming_lead(
         inbox_email=inbox_email,
     )
     if off and link:
-        snap = _snapshot_from_offer(subject, off, mailing_bound=False)
+        mailed = await offer_was_mailed_to(session, int(user_id), int(off.id), contact_email)
+        snap = _snapshot_from_offer(
+            subject,
+            off,
+            mailing_bound=_reply_bound(how="listing", subject=subject, mailed=mailed),
+        )
         return off, link, "listing", snap
 
     off = await find_offer_by_incoming_subject(
@@ -93,9 +113,42 @@ async def resolve_offer_for_incoming_lead(
             mailed = await offer_was_mailed_to(
                 session, int(user_id), int(off.id), contact_email
             )
-            snap = _snapshot_from_offer(subject, off, mailing_bound=mailed)
             how = "subject_mailing" if mailed else "subject_only"
+            snap = _snapshot_from_offer(
+                subject,
+                off,
+                mailing_bound=_reply_bound(how=how, subject=subject, mailed=mailed),
+            )
             return off, link, how, snap
+
+    if (inbox_email or "").strip() and (contact_email or "").strip():
+        conv = await _load_conversation_link(
+            session,
+            user_id=int(user_id),
+            inbox_email=inbox_email or "",
+            contact_email=contact_email,
+        )
+        if conv:
+            curl = (conv.ad_url or "").strip()
+            if curl:
+                off = await find_offer_by_link(session, user_id=int(user_id), ad_url=curl)
+                if off:
+                    link = (offer_effective_link(off) or curl).strip()
+                    if link:
+                        mailed = await offer_was_mailed_to(
+                            session, int(user_id), int(off.id), contact_email
+                        )
+                        snap = _snapshot_from_offer(
+                            subject,
+                            off,
+                            mailing_bound=_reply_bound(
+                                how="conversation",
+                                subject=subject,
+                                mailed=mailed,
+                                has_conv_anchor=bool(getattr(conv, "tg_message_id", None)),
+                            ),
+                        )
+                        return off, link, "conversation", snap
 
     return None, "", "", snap
 

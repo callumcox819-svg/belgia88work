@@ -32,7 +32,7 @@ class IncomingMailStatsTests(unittest.TestCase):
         )
         self.assertEqual(classify_incoming_row(row), "seller_matched")
 
-    def test_offer_title_only_without_mailing_proof(self):
+    def test_seller_matched_via_re_subject_without_mailing_bound(self):
         row = SimpleNamespace(
             from_email="seller@icloud.com",
             from_name="",
@@ -42,7 +42,19 @@ class IncomingMailStatsTests(unittest.TestCase):
             resolved_offer_id=7,
             mailing_bound=False,
         )
-        self.assertEqual(classify_incoming_row(row), "offer_title_only")
+        self.assertEqual(classify_incoming_row(row), "seller_matched")
+
+    def test_marketing_sender_classified_as_platform(self):
+        row = SimpleNamespace(
+            from_email="admin@latestcasinobonuses.com",
+            from_name="",
+            subject="LCB New Brand Alert",
+            body="",
+            resolved_offer_email_id=None,
+            resolved_offer_id=99,
+            mailing_bound=False,
+        )
+        self.assertEqual(classify_incoming_row(row), "platform")
 
 
 if __name__ == "__main__":

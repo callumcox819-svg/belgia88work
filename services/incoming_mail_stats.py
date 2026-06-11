@@ -15,6 +15,7 @@ from services.incoming_mail_worker import (
     _is_recipient_delivery_failure_bounce,
     _is_smtp_block_bounce,
 )
+from services.offer_matching import is_seller_reply_subject
 
 
 _AUTO_REPLY_RE = re.compile(
@@ -26,6 +27,11 @@ _AUTO_REPLY_RE = re.compile(
 _PLATFORM_DOMAIN_RE = re.compile(
     r"(2dehands\.be|2ememain\.be|bpost\.be|facebook\.com|marketplace|gmx\.(net|de)|"
     r"mail\.gmail\.com)",
+    re.I,
+)
+
+_MARKETING_DOMAIN_RE = re.compile(
+    r"(latestcasinobonuses|casinobonus|newsletter|mailchimp|sendgrid\.net)",
     re.I,
 )
 
@@ -41,6 +47,14 @@ def _is_platform_sender(from_email: str) -> bool:
         return False
     domain = f.split("@", 1)[1]
     return bool(_PLATFORM_DOMAIN_RE.search(domain))
+
+
+def _is_marketing_sender(from_email: str) -> bool:
+    f = (from_email or "").strip().lower()
+    if not f or "@" not in f:
+        return False
+    domain = f.split("@", 1)[1]
+    return bool(_MARKETING_DOMAIN_RE.search(domain))
 
 
 def classify_incoming_row(row: IncomingMail) -> str:
@@ -62,9 +76,13 @@ def classify_incoming_row(row: IncomingMail) -> str:
         return "auto_reply"
     if _is_platform_sender(fe):
         return "platform"
+    if _is_marketing_sender(fe):
+        return "platform"
     if row.resolved_offer_email_id:
         return "seller_matched"
-    if row.resolved_offer_id and bool(getattr(row, "mailing_bound", False)):
+    if row.resolved_offer_id and (
+        bool(getattr(row, "mailing_bound", False)) or is_seller_reply_subject(subj)
+    ):
         return "seller_matched"
     if row.resolved_offer_id:
         return "offer_title_only"
@@ -73,7 +91,7 @@ def classify_incoming_row(row: IncomingMail) -> str:
 
 _CATEGORY_LABELS = {
     "seller_matched": "🟢 Продавец (рассылка / email в базе) — ближе всего к «живому»",
-    "offer_title_only": "📦 Только оффер/тема (email отправителя не совпал)",
+    "offer_title_only": "📦 Оффер без Re: в теме (редко — проверьте вручную)",
     "platform": "🏪 Платформа / сервис (2dehands.be, bpost.be, gmx…)",
     "google": "📧 Google / системное (в TG обычно нет карточки)",
     "bounce_block": "⛔ Block отправителя (Gmail 5.7.1 / Message blocked)",

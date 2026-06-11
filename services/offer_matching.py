@@ -418,9 +418,16 @@ async def resolve_offer_for_incoming(
     return None, None
 
 
+def is_seller_reply_subject(subject: str) -> bool:
+    """Ответ продавца на рассылку (Re:/Aw: в теме)."""
+    return bool(re.match(r"^\s*(re|aw)\s*:", (subject or "").strip(), re.I))
+
+
 def subject_is_informative(subject: str) -> bool:
     subj = _norm_subject(subject)
-    return len(subj) >= 8 or len(_subject_tokens(subj)) >= 2
+    if len(subj) >= 6 or len(_subject_tokens(subj)) >= 2:
+        return True
+    return is_seller_reply_subject(subject) and len(subj) >= 4
 
 
 def subject_token_hits(subject: str, off: Offer) -> int:

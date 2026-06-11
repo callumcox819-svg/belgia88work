@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import IncomingMail
@@ -108,12 +108,6 @@ async def rebind_stale_incoming_mails(
         await session.execute(
             select(IncomingMail)
             .where(IncomingMail.user_id == int(db_user_id))
-            .where(
-                or_(
-                    IncomingMail.resolved_offer_id.is_(None),
-                    IncomingMail.mailing_bound.is_(False),
-                )
-            )
             .order_by(IncomingMail.id.desc())
             .limit(int(limit))
         )
